@@ -1,0 +1,381 @@
+{
+  "version": 1,
+  "classification_field": "LU1_level__3_name",
+  "code_field": "LU1_level_3_code",
+  "rule": "Match both original code and exact original label; never change source properties. Groups are visual only.",
+  "categories": [
+    {
+      "code": 111,
+      "original_label": " Residential ",
+      "display_label": "Residential",
+      "legend_label": "Residential",
+      "group": "Settlement",
+      "colour": "#3979C3"
+    },
+    {
+      "code": 112,
+      "original_label": "Agriculture facilities",
+      "display_label": "Agriculture facilities",
+      "legend_label": "Agriculture facilities",
+      "group": "Settlement",
+      "colour": "#E5CC83"
+    },
+    {
+      "code": 113,
+      "original_label": "Industry & Commerce ",
+      "display_label": "Industry & Commerce",
+      "legend_label": "Industry & Commerce",
+      "group": "Settlement",
+      "colour": "#956441"
+    },
+    {
+      "code": 114,
+      "original_label": "Unused urban areas, brownfields",
+      "display_label": "Unused urban areas, brownfields",
+      "legend_label": "Unused urban areas, brownfields",
+      "group": "Settlement",
+      "colour": "#AA9690"
+    },
+    {
+      "code": 115,
+      "original_label": "Social, cultural, and other (e.g. indoor sports halls)",
+      "display_label": "Social, cultural, and other (e.g. indoor sports halls)",
+      "legend_label": "Social, cultural, and other (e.g. indoor sports halls)",
+      "group": "Settlement",
+      "colour": "#9B83BC"
+    },
+    {
+      "code": 131,
+      "original_label": "Cemetery",
+      "display_label": "Cemetery",
+      "legend_label": "Cemetery",
+      "group": "Settlement",
+      "colour": "#87916D"
+    },
+    {
+      "code": 132,
+      "original_label": "Public open spaces (e.g. square)",
+      "display_label": "Public open spaces (e.g. square)",
+      "legend_label": "Public open spaces (e.g. square)",
+      "group": "Settlement",
+      "colour": "#CBC4B8"
+    },
+    {
+      "code": 133,
+      "original_label": "Park & public green (playground)",
+      "display_label": "Park & public green (playground)",
+      "legend_label": "Park & public green (playground)",
+      "group": "Settlement",
+      "colour": "#77B76C"
+    },
+    {
+      "code": 134,
+      "original_label": "Other (green area not used for recreation e.g. roundabout) ",
+      "display_label": "Other (green area not used for recreation e.g. roundabout)",
+      "legend_label": "Other (green area not used for recreation e.g. roundabout)",
+      "group": "Settlement",
+      "colour": "#99BE7D"
+    },
+    {
+      "code": 141,
+      "original_label": "Golf course ",
+      "display_label": "Golf course",
+      "legend_label": "Golf course",
+      "group": "Settlement",
+      "colour": "#93C68A"
+    },
+    {
+      "code": 142,
+      "original_label": "Camp ground ",
+      "display_label": "Camp ground",
+      "legend_label": "Camp ground",
+      "group": "Settlement",
+      "colour": "#C8BF75"
+    },
+    {
+      "code": 143,
+      "original_label": "Other sport facilities (outdoor sports facilities)",
+      "display_label": "Other sport facilities (outdoor sports facilities)",
+      "legend_label": "Other sport facilities (outdoor sports facilities)",
+      "group": "Settlement",
+      "colour": "#D59BB0"
+    },
+    {
+      "code": 144,
+      "original_label": "Other recreation facilities (allotment gardens and picnic)",
+      "display_label": "Other recreation facilities (allotment gardens and picnic)",
+      "legend_label": "Other recreation facilities (allotment gardens and picnic)",
+      "group": "Settlement",
+      "colour": "#C7AE6B"
+    },
+    {
+      "code": 151,
+      "original_label": "Utility (production, disposal facilities)",
+      "display_label": "Utility (production, disposal facilities)",
+      "legend_label": "Utility (production, disposal facilities)",
+      "group": "Settlement",
+      "colour": "#AD8174"
+    },
+    {
+      "code": 152,
+      "original_label": "Mining / extraction",
+      "display_label": "Mining / extraction",
+      "legend_label": "Mining / extraction",
+      "group": "Settlement",
+      "colour": "#C99C71"
+    },
+    {
+      "code": 160,
+      "original_label": "Construction site ",
+      "display_label": "Construction site",
+      "legend_label": "Construction site",
+      "group": "Settlement",
+      "colour": "#E6AE68"
+    },
+    {
+      "code": 210,
+      "original_label": "Arable land",
+      "display_label": "Arable land",
+      "legend_label": "Arable land",
+      "group": "Agriculture",
+      "colour": "#F5E6A1"
+    },
+    {
+      "code": 220,
+      "original_label": "Grassland ",
+      "display_label": "Grassland",
+      "legend_label": "Grassland",
+      "group": "Agriculture",
+      "colour": "#AED581"
+    },
+    {
+      "code": 231,
+      "original_label": "Vineyard",
+      "display_label": "Vineyard",
+      "legend_label": "Vineyard",
+      "group": "Agriculture",
+      "colour": "#D5C268"
+    },
+    {
+      "code": 232,
+      "original_label": "Fruit trees ",
+      "display_label": "Fruit trees",
+      "legend_label": "Fruit trees",
+      "group": "Agriculture",
+      "colour": "#DDDC91"
+    },
+    {
+      "code": 233,
+      "original_label": "Other (greenhouses and tree plantations)",
+      "display_label": "Other (greenhouses and tree plantations)",
+      "legend_label": "Other (greenhouses and tree plantations)",
+      "group": "Agriculture",
+      "colour": "#EFE3B1"
+    },
+    {
+      "code": 240,
+      "original_label": "Perennial biomass crops",
+      "display_label": "Perennial biomass crops",
+      "legend_label": "Perennial biomass crops",
+      "group": "Agriculture",
+      "colour": "#DAD481"
+    },
+    {
+      "code": 311,
+      "original_label": "Coniferous",
+      "display_label": "Coniferous",
+      "legend_label": "Coniferous",
+      "group": "Forest",
+      "colour": "#1B5E20"
+    },
+    {
+      "code": 312,
+      "original_label": "Mixed",
+      "display_label": "Mixed",
+      "legend_label": "Mixed",
+      "group": "Forest",
+      "colour": "#2E6B3A"
+    },
+    {
+      "code": 313,
+      "original_label": "Deciduous",
+      "display_label": "Deciduous",
+      "legend_label": "Deciduous",
+      "group": "Forest",
+      "colour": "#307A38"
+    },
+    {
+      "code": 314,
+      "original_label": "Young forest",
+      "display_label": "Young forest",
+      "legend_label": "Young forest",
+      "group": "Forest",
+      "colour": "#4B8A45"
+    },
+    {
+      "code": 321,
+      "original_label": "Damaged forest",
+      "display_label": "Damaged forest",
+      "legend_label": "Damaged forest",
+      "group": "Forest",
+      "colour": "#6D7850"
+    },
+    {
+      "code": 323,
+      "original_label": "Clear cuts (harvesting)",
+      "display_label": "Clear cuts (harvesting)",
+      "legend_label": "Clear cuts (harvesting)",
+      "group": "Forest",
+      "colour": "#969E70"
+    },
+    {
+      "code": 331,
+      "original_label": "Forest roads",
+      "display_label": "Forest roads",
+      "legend_label": "Forest roads",
+      "group": "Forest",
+      "colour": "#92978B"
+    },
+    {
+      "code": 410,
+      "original_label": "Gravel",
+      "display_label": "Gravel",
+      "legend_label": "Gravel",
+      "group": "Natural surfaces",
+      "colour": "#BDB3A6"
+    },
+    {
+      "code": 420,
+      "original_label": "Rocks",
+      "display_label": "Rocks",
+      "legend_label": "Rocks",
+      "group": "Natural surfaces",
+      "colour": "#979391"
+    },
+    {
+      "code": 430,
+      "original_label": "Natural grassland",
+      "display_label": "Natural grassland",
+      "legend_label": "Natural grassland",
+      "group": "Natural surfaces",
+      "colour": "#B9D98A"
+    },
+    {
+      "code": 440,
+      "original_label": "Heathland",
+      "display_label": "Heathland",
+      "legend_label": "Heathland",
+      "group": "Natural surfaces",
+      "colour": "#BBA6C4"
+    },
+    {
+      "code": 450,
+      "original_label": "Bushes",
+      "display_label": "Bushes",
+      "legend_label": "Bushes",
+      "group": "Natural surfaces",
+      "colour": "#7AA45B"
+    },
+    {
+      "code": 460,
+      "original_label": "Wetland",
+      "display_label": "Wetland",
+      "legend_label": "Wetland",
+      "group": "Natural surfaces",
+      "colour": "#78B9AA"
+    },
+    {
+      "code": 511,
+      "original_label": "Natural",
+      "display_label": "Natural",
+      "legend_label": "Running water: Natural",
+      "group": "Water",
+      "colour": "#19B8CE"
+    },
+    {
+      "code": 512,
+      "original_label": "Artificial",
+      "display_label": "Artificial",
+      "legend_label": "Running water: Artificial",
+      "group": "Water",
+      "colour": "#63CAD8"
+    },
+    {
+      "code": 521,
+      "original_label": "Natural",
+      "display_label": "Natural",
+      "legend_label": "Standing water: Natural",
+      "group": "Water",
+      "colour": "#00A2B8"
+    },
+    {
+      "code": 522,
+      "original_label": "Artificial",
+      "display_label": "Artificial",
+      "legend_label": "Standing water: Artificial",
+      "group": "Water",
+      "colour": "#70D9E4"
+    },
+    {
+      "code": 611,
+      "original_label": "Rural roads",
+      "display_label": "Rural roads",
+      "legend_label": "Rural roads",
+      "group": "Transport",
+      "colour": "#999999"
+    },
+    {
+      "code": 612,
+      "original_label": "Main roads",
+      "display_label": "Main roads",
+      "legend_label": "Main roads",
+      "group": "Transport",
+      "colour": "#6D6D6D"
+    },
+    {
+      "code": 620,
+      "original_label": "Railways",
+      "display_label": "Railways",
+      "legend_label": "Railways",
+      "group": "Transport",
+      "colour": "#444444"
+    },
+    {
+      "code": 631,
+      "original_label": "Commercial",
+      "display_label": "Commercial",
+      "legend_label": "Air traffic: Commercial",
+      "group": "Transport",
+      "colour": "#8D91A6"
+    },
+    {
+      "code": 632,
+      "original_label": "Sport & Leisure",
+      "display_label": "Sport & Leisure",
+      "legend_label": "Air traffic: Sport & Leisure",
+      "group": "Transport",
+      "colour": "#AAAEC2"
+    },
+    {
+      "code": 640,
+      "original_label": "Water traffic",
+      "display_label": "Water traffic",
+      "legend_label": "Water traffic",
+      "group": "Transport",
+      "colour": "#5F9EAC"
+    },
+    {
+      "code": 650,
+      "original_label": "Parking lot",
+      "display_label": "Parking lot",
+      "legend_label": "Parking lot",
+      "group": "Transport",
+      "colour": "#B4B4B4"
+    }
+  ],
+  "fallback": {
+    "legend_label": "Unknown / unmapped category",
+    "group": "Unknown",
+    "colour": "#F000CC"
+  }
+}

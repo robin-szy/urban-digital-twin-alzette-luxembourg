@@ -1,0 +1,28 @@
+# Land-use and ownership preparation. Cadastral remains a placeholder.
+# Relative data paths resolve from devika/, not the shell working directory.
+sources:
+  landuse:
+    path: null # landuse-luxembourg-07-15-18-21-24.gpkg
+    layer: LandUse_status_2024
+    category_field: LU1_level__3_name
+  ownership:
+    path: null # owner-type-grid.geojson
+    fields: [TOP_LEFT, PUBLIC_PERCENT, Commune_percent, Etat_percent, Autre_percent]
+  cadastral:
+    path: null # pcn-shape/PARCELLES.shp, with its sidecar files
+    fields: [ID_PARCELL, CODE_NATUR]
+    category_lookup: null
+subset:
+  aoi_path: null
+  bbox: null # Alternative to an AOI file; never assume its CRS.
+  bbox_crs: null
+  max_features: 50000 # Limit spatial candidates before exporting.
+output:
+  directory: outputs
+  format: GeoJSON
+  crs: EPSG:4326
+  max_file_mb: 25
+  max_feature_mb: 4
+eddie:
+  static_directory: ../EDDIE/eddie_antarctica/src/static/geo
+# No permanent Hesperange boundary and no credentials are stored here.

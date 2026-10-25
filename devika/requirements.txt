@@ -1,0 +1,7 @@
+# Preparation only; EDDIE keeps its own runtime dependencies.
+geopandas>=1.0,<2
+pandas>=2,<4
+shapely>=2.0,<3
+pyogrio>=0.9,<1
+pyproj>=3.6,<4
+PyYAML>=6,<7
