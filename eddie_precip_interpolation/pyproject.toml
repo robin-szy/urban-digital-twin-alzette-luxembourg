@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eddie_precip_interpolation"
+version = "0.0.1"
+description = "Alzette digital twin: EDDIE plugin that derives a precipitation layer from already-ingested weather observations. Placeholder multiply-by-two transform, validating the derive-and-publish path before real spatial interpolation is built."
+requires-python = ">=3.11"
+# Loose/minimum specifiers only - EDDIE's own environment.yml already pins
+# exact versions for most of these; this file must not fight that when
+# pip-installed into the same conda env.
+dependencies = [
+    "numpy",
+    "pandas",
+    "geopandas",
+    "shapely",
+    "sqlalchemy>=2",
+    "geoalchemy2",
+    "psycopg2-binary",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["eddie_precip_interpolation"]
+
+[tool.pytest.ini_options]
+markers = ["integration: needs a running PostGIS (db_postgres_digital_twin) and GeoServer; not run by default"]
+addopts = "-m 'not integration'"

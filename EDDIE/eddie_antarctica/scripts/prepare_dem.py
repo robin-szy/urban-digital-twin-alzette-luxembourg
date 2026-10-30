@@ -1,13 +1,17 @@
 """
 Merge DEM GeoTIFFs into the terrain's master DEM, then rebuild the Cesium terrain from it.
 
-Usage: python scripts/prepare_dem.py <dem.tif> [<dem.tif> ...] [--new] [--height-offset METRES] [--volume NAME]
+Usage: python scripts/prepare_dem.py <dem.tif> [<dem.tif> ...] [--new] [--height-offset METRES]
+                                     [--resolution METRES] [--volume NAME]
 
   dem.tif          One or more DEMs. Where they overlap, later files win over earlier ones,
                    and all of them win over what is already in the master DEM.
   --new            Discard the master DEM and build the terrain from only these files.
   --height-offset  Added to every height, e.g. ~47.5 to turn Luxembourg NG-L heights into
                    ellipsoid heights so terrain lines up with other 3D data. Default 0.
+  --resolution     Pixel size of the merged DEM, in the master's CRS units (metres for LUREF).
+                   Defaults to the finest input. The whole mosaic is held in memory, so use e.g. 5
+                   for a country-wide lidar DEM (0.5 m pixels would need ~140 GB of RAM).
   --volume         Docker volume mounted at /stored_data (passed to build_terrain.sh).
 
 Steps:
@@ -55,7 +59,7 @@ def sources_file(master: pathlib.Path) -> pathlib.Path:
 
 
 def merge_dems(new_files: Sequence[pathlib.Path], output: pathlib.Path,
-               existing: pathlib.Path | None = None) -> None:
+               existing: pathlib.Path | None = None, resolution: float | None = None) -> None:
     """
     Merge DEMs into one float32 GeoTIFF covering the union of their extents.
 
@@ -67,6 +71,9 @@ def merge_dems(new_files: Sequence[pathlib.Path], output: pathlib.Path,
         Where to write the merged DEM. Pixels no input covers are NaN.
     existing : pathlib.Path | None
         A previously merged DEM. It has the lowest precedence, and its CRS is kept.
+    resolution : float | None
+        Pixel size of the output, in the units of its CRS. Defaults to the finest input resolution.
+        The mosaic is held in memory at this size, so coarsen it for large inputs.
     """
     # rasterio's "first" method keeps the first valid value per pixel, so list highest precedence first.
     paths = list(reversed(new_files)) + ([existing] if existing else [])
@@ -81,8 +88,8 @@ def merge_dems(new_files: Sequence[pathlib.Path], output: pathlib.Path,
                 ds = stack.enter_context(WarpedVRT(ds, crs=target_crs, resampling=Resampling.bilinear,
                                                    dtype="float32", nodata=np.nan))
             aligned.append(ds)
-        finest_res = min(min(ds.res) for ds in aligned)
-        mosaic, transform = merge(aligned, res=finest_res, nodata=np.nan, dtype="float32", indexes=[1],
+        res = resolution or min(min(ds.res) for ds in aligned)
+        mosaic, transform = merge(aligned, res=res, nodata=np.nan, dtype="float32", indexes=[1],
                                   method="first", resampling=Resampling.bilinear, target_aligned_pixels=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(output, "w", height=mosaic.shape[1], width=mosaic.shape[2], crs=target_crs,
@@ -165,6 +172,7 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("dems", nargs="+", type=pathlib.Path)
     parser.add_argument("--new", action="store_true", help="ignore the current master DEM")
     parser.add_argument("--height-offset", type=float, default=0.0)
+    parser.add_argument("--resolution", type=float)
     parser.add_argument("--volume", default=DEFAULT_VOLUME)
     args = parser.parse_args(argv)
 
@@ -181,7 +189,7 @@ def main(argv: List[str] | None = None) -> None:
         merged = pathlib.Path(work_dir) / "dem_merged.tif"
         terrain_input = pathlib.Path(work_dir) / "dem_4326.tif"
         print(f"==> Merging {len(new_files)} file(s)" + (f" into {existing}" if existing else " (new terrain)"))
-        merge_dems(new_files, merged, existing)
+        merge_dems(new_files, merged, existing, args.resolution)
         print("==> Reprojecting to EPSG:4326 and filling gaps")
         to_terrain_input(merged, terrain_input, args.height_offset)
         print("==> Tiling")

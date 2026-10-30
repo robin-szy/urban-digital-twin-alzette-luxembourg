@@ -22,11 +22,24 @@ export GEOSERVER_URL
 ENV_VARS_TO_FILL='$CESIUM_ACCESS_TOKEN,$LINZ_BASEMAPS_API_KEY,$BACKEND_URL,$GEOSERVER_URL'
 
 # Substitute variables and save whole file to variable, sponge is not available to buffer.
-for FILE_TO_SUB in "wwwroot/config.json" "wwwroot/init/catalog.json"
+for FILE_TO_SUB in \
+  "wwwroot/config.json" \
+  "wwwroot/init/catalog.json" \
+  "wwwroot/date-selector.js"
 do
   SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "$FILE_TO_SUB")
   # Overwrite original file.
   echo "$SUBBED" > "$FILE_TO_SUB"
 done
+
+# Inject the Digital Twin date selector into Terria's page.
+if ! grep -q "date-selector.js" wwwroot/index.html
+then
+  sed -i \
+    's#</body>#<script src="/date-selector.js?v=2"></script></body>#' \
+    wwwroot/index.html
+fi
 # Run original terria startup command
 node ./node_modules/terriajs-server/lib/app.js --config-file serverconfig.json
+
+

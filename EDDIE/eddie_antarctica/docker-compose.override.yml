@@ -3,12 +3,17 @@ services:
     user: root
     volumes:
       - ../../eddie_alzette_ingest/eddie_alzette_ingest:/venv/lib/python3.11/site-packages/eddie_alzette_ingest:ro
+      - ../../eddie_precip_interpolation/eddie_precip_interpolation:/venv/lib/python3.11/site-packages/eddie_precip_interpolation:ro
+      - ../../eddie_water_level/eddie_water_level:/venv/lib/python3.11/site-packages/eddie_water_level:ro
       - ../../data_sources:/app/data_sources:ro
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
+
   celery_worker:
     volumes:
       - ../../eddie_alzette_ingest/eddie_alzette_ingest:/venv/lib/python3.11/site-packages/eddie_alzette_ingest:ro
+      - ../../eddie_precip_interpolation/eddie_precip_interpolation:/venv/lib/python3.11/site-packages/eddie_precip_interpolation:ro
+      - ../../eddie_water_level/eddie_water_level:/venv/lib/python3.11/site-packages/eddie_water_level:ro
       - ../../data_sources:/app/data_sources:ro
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
