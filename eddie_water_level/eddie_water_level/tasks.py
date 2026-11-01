@@ -1457,3 +1457,79 @@ def derive_water_level_interpolation(
         "wms_view":
             WATER_INTERPOLATION_WMS_VIEW,
     }
+
+    
+@app.task(
+    name="eddie_water_level.tasks.update_recent_water_levels"
+)
+def update_recent_water_levels(
+    lookback_hours: int = 2,
+) -> dict:
+    """
+    Update recent Alzette water-level observations.
+
+    Retrieve a rolling window to capture slightly delayed
+    measurements, then update the corresponding river
+    interpolation.
+
+    Intended to be scheduled every 15 minutes.
+    """
+
+    from datetime import datetime, timedelta, timezone
+
+    if not isinstance(lookback_hours, int):
+        raise ValueError("lookback_hours must be an integer")
+
+    if not 1 <= lookback_hours <= 48:
+        raise ValueError("lookback_hours must be between 1 and 48")
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=lookback_hours)
+
+    start_iso = start.isoformat()
+    end_iso = end.isoformat()
+
+    # 1. Retrieve recent observations
+    observation_result = load_water_level_period.run(
+        start_iso,
+        end_iso,
+    )
+
+    # 2. Do not interpolate when observations are unavailable
+    if observation_result.get("status") != "success":
+        return {
+            "status": observation_result.get("status"),
+            "start": start_iso,
+            "end": end_iso,
+            "observations": observation_result,
+            "interpolation": None,
+        }
+
+    # 3. Update only the recent interpolation period
+    interpolation_result = derive_water_level_interpolation.run(
+        start_iso,
+        end_iso,
+    )
+
+    return {
+        "status": interpolation_result.get("status"),
+        "start": start_iso,
+        "end": end_iso,
+        "observations": observation_result,
+        "interpolation": interpolation_result,
+    }
+
+from celery.schedules import crontab
+
+app.conf.beat_schedule.update({
+    "alzette-water-level-every-15-minutes": {
+        "task": "eddie_water_level.tasks.update_recent_water_levels",
+        "schedule": crontab(minute="*/15"),
+        "kwargs": {
+            "lookback_hours": 2,
+        },
+        "options": {
+            "expires": 600,
+        },
+    },
+})
