@@ -1,0 +1,7 @@
+{"type":"FeatureCollection",
+ "crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:EPSG::4326"}},
+ "features":[
+  {"type":"Feature","properties":{"station":"A","date":"2026-10-01","precip_mm":4.2},"geometry":{"type":"Point","coordinates":[6.13,49.61]}},
+  {"type":"Feature","properties":{"station":"B","date":"2026-10-01","precip_mm":6.8},"geometry":{"type":"Point","coordinates":[6.14,49.63]}},
+  {"type":"Feature","properties":{"station":"C","date":"2026-10-01","precip_mm":3.1},"geometry":{"type":"Point","coordinates":[6.12,49.59]}}
+ ]}
