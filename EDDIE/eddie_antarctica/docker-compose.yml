@@ -1,3 +1,4 @@
+
 # Copyright © 2021-2025 Geospatial Research Institute Toi Hangarau
 # LICENSE: https://github.com/GeospatialResearch/eddie_antartica/blob/master/LICENSE
 #
@@ -8,11 +9,11 @@
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU Affero General Public License for more details.
 #
 # You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 # Defines services, their images, and interactions between services.
 
@@ -22,6 +23,7 @@ volumes:
   antarctic_geoserver_data:
 
 services:
+
   db_postgres:
     # Database to store all vector data, states, and links to raster data.
     image: postgis/postgis:16-3.4
@@ -76,7 +78,7 @@ services:
       - api_keys.env
       - .env.docker-override
     volumes:
-      # Bind host data directories to container, allowing different instances to share data sources.
+      # Bind host data directories to container
       - antarctic_stored_data:/stored_data
       - antarctic_geoserver_data:/stored_data/geoserver
     ports:
@@ -94,9 +96,46 @@ services:
       resources:
         reservations:
           devices:
-          - driver: nvidia
-            count: all # Use all available GPUs
-            capabilities: [ gpu ]
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ==================================================
+  # CELERY BEAT - AUTOMATIC WATER-LEVEL UPDATES
+  # ==================================================
+
+  celery_beat:
+    # Schedules periodic tasks for the Digital Twin
+    build:
+      context: .
+      dockerfile: docker/eddie.Dockerfile
+
+    container_name: celery_beat_digital_twin
+
+    entrypoint: ["/venv/bin/python", "-m", "celery"]
+
+    command:
+      - "-A"
+      - "src.eddie_antartica.tasks"
+      - "beat"
+      - "--loglevel=INFO"
+      - "--schedule=/tmp/celerybeat-schedule"
+
+    restart: always
+
+    env_file:
+      - .env
+      - api_keys.env
+      - .env.docker-override
+
+    volumes:
+      - antarctic_stored_data:/stored_data
+      - antarctic_geoserver_data:/stored_data/geoserver
+
+    depends_on:
+      - db_postgres
+      - message_broker
+      - geoserver
 
   geoserver:
     # Serves geospatial web data through interactions with files and database
@@ -149,5 +188,4 @@ services:
       test: redis-cli ping | grep PONG
       timeout: 1s
       retries: 10
-
     restart: always
