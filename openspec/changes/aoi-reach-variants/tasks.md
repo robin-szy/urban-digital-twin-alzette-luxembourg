@@ -27,7 +27,7 @@
 - [x] 4.2 Implement reach persistence and reuse with `last_used_at` updates and `building`/`ready`/`failed` status, so a failed reach returns its recorded reason rather than a partial result; verify integration tests for a cache hit, a build-in-progress read and a failed-reach re-request
 - [x] 4.3 Persist a source hash over the marker and river-line inputs and treat a reach as stale when it changes; verify a test that mutating a fixture source triggers a rebuild while an unchanged source serves from cache
 - [x] 4.4 Read the fallback reach from configuration (`AOI_FALLBACK_REACH`, defaulting to Alzette 35–50), pin it, and resolve it at startup; verify startup fails with the validation reason when the configured fallback is invalid, and that the pinned flag is set when it is valid
-- [ ] 4.5 Compare the fallback reach's corridor against the existing `aoi_alzette_35_50_300m` geometry and record the result in `results/`; verify the comparison reports the deviation and that it is within the tolerance the report states
+- [x] 4.5 Compare the fallback reach's corridor against the existing `aoi_alzette_35_50_300m` geometry and record the result in `results/`; verify the comparison reports the deviation and that it is within the tolerance the report states
 
 ## 5. Computed variants
 
@@ -38,8 +38,8 @@
 
 ## 6. Lookup variants, availability and degradation
 
-- [ ] 6.1 Implement the lookup variant base that selects features related to the reach from a configured source layer and dissolves them to one geometry; verify tests that unrelated features are excluded, several related features dissolve to one polygon, and a present-but-empty selection is reported rather than returned as a valid empty polygon
-- [ ] 6.2 Implement `hq100` reading its source path from configuration (`data/raw/Flood_hazard_HQ100/HWGK2021_HQ100.shp`); verify a test that relocating the configured path changes where it reads from without a code change
+- [x] 6.1 Implement the lookup variant base that selects features related to the reach from a configured source layer and dissolves them to one geometry; verify tests that unrelated features are excluded, several related features dissolve to one polygon, and a present-but-empty selection is reported rather than returned as a valid empty polygon
+- [x] 6.2 Implement `hq100` reading its source path from configuration (`data/raw/Flood_hazard_HQ100/HWGK2021_HQ100.shp`); verify a test that relocating the configured path changes where it reads from without a code change
 - [x] 6.3 Implement `watersheds` and `hq_extreme` as declared-unavailable until their sources are configured; verify a test that listing variants reports availability and the reason for each unavailable one
 - [x] 6.4 Implement degradation — substitute a variant's configured fallback and return `{requested, actual, degraded, reason}`, failing instead when no fallback is configured; verify tests for the watershed substitution, the no-fallback failure, and that every degraded result carries all four fields
 - [x] 6.5 Configure `watersheds` to fall back to a river-km-plus-margin variant; verify an integration test that requesting the watershed variant today yields a degraded result naming both variants

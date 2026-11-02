@@ -7,6 +7,8 @@ from eddie_aoi.builder import build_reach_from_geometries
 from eddie_aoi.constants import METRIC_CRS
 from eddie_aoi.errors import PreparationError
 from eddie_aoi.variants import (
+    MODE_CLIP,
+    MODE_FEATURES,
     HQ100_SELECT_BUFFER_M,
     WATERSHED_FALLBACK_BUFFER_M,
     LookupVariant,
@@ -81,7 +83,7 @@ def test_an_empty_selection_is_reported_not_returned(tmp_path, reach):
     path = write_layer(tmp_path / "ws.gpkg", [box(90000, 90000, 95000, 95000)])
     variant = LookupVariant(name="watersheds", source_path=path)
 
-    with pytest.raises(PreparationError, match="no features related to reach"):
+    with pytest.raises(PreparationError, match="nothing related to reach"):
         variant.build(reach)
 
 
@@ -89,7 +91,7 @@ def test_select_buffer_widens_the_selection(tmp_path, reach):
     # A footprint 800 m off the river: missed by the line, caught by a buffer.
     path = write_layer(tmp_path / "hq.gpkg", [box(1000, 800, 2000, 1200)])
 
-    with pytest.raises(PreparationError, match="no features related"):
+    with pytest.raises(PreparationError, match="nothing related"):
         LookupVariant(name="hq100", source_path=path).build(reach)
 
     frame = LookupVariant(
@@ -272,3 +274,102 @@ def test_source_layer_read_returns_an_indexed_frame(tmp_path):
     path = write_layer(tmp_path / "x.gpkg", [box(0, 0, 1, 1)])
     frame = read_source_layer(path)
     assert frame.sindex is not None
+
+
+# --- selection modes --------------------------------------------------------
+
+
+def test_features_mode_keeps_whole_features(tmp_path, reach):
+    # A watershed extends well beyond the river; taking it entire is the point.
+    path = write_layer(tmp_path / "ws.gpkg", [box(-5000, -4000, 20000, 4000)])
+
+    frame = LookupVariant(
+        name="watersheds", source_path=path, mode=MODE_FEATURES
+    ).build(reach)
+
+    assert frame.geometry.iloc[0].area == pytest.approx(25000.0 * 8000.0, rel=1e-6)
+
+
+def test_clip_mode_restricts_to_the_reach_neighbourhood(tmp_path, reach):
+    # The same oversized feature, clipped: only the neighbourhood survives.
+    path = write_layer(tmp_path / "hq.gpkg", [box(-5000, -4000, 20000, 4000)])
+
+    frame = LookupVariant(
+        name="hq100", source_path=path, select_buffer_m=2000.0, mode=MODE_CLIP
+    ).build(reach)
+
+    geometry = frame.geometry.iloc[0]
+    selector = reach.centerline.buffer(2000.0, quad_segs=64)
+    assert geometry.area < selector.area * 1.0001
+    assert geometry.area == pytest.approx(selector.area, rel=1e-6)
+
+
+def test_the_two_modes_differ_on_an_oversized_feature(tmp_path, reach):
+    path = write_layer(tmp_path / "x.gpkg", [box(-5000, -4000, 20000, 4000)])
+
+    whole = LookupVariant(
+        name="watersheds", source_path=path, mode=MODE_FEATURES
+    ).build(reach).geometry.iloc[0].area
+    clipped = LookupVariant(
+        name="hq100", source_path=path, select_buffer_m=2000.0, mode=MODE_CLIP
+    ).build(reach).geometry.iloc[0].area
+
+    assert clipped < whole
+
+
+def test_mode_is_recorded_on_the_result(tmp_path, reach):
+    import json
+
+    path = write_layer(tmp_path / "ws.gpkg", [box(0, -500, 15000, 500)])
+    frame = LookupVariant(name="watersheds", source_path=path).build(reach)
+
+    assert json.loads(frame.iloc[0]["params"])["mode"] == MODE_FEATURES
+
+
+def test_registry_declares_the_modes():
+    registry = default_registry()
+    assert registry.get("watersheds").mode == MODE_FEATURES
+    assert registry.get("hq100").mode == MODE_CLIP
+    assert registry.get("hq_extreme").mode == MODE_CLIP
+
+
+def test_an_unknown_mode_is_rejected_at_declaration():
+    with pytest.raises(PreparationError, match="Unknown selection mode"):
+        LookupVariant(name="x", mode="sometimes")
+
+
+def test_clip_mode_requires_a_neighbourhood_to_clip_against():
+    with pytest.raises(PreparationError, match="needs a positive select_buffer_m"):
+        LookupVariant(name="x", mode=MODE_CLIP)
+
+
+def test_multipart_rows_are_exploded_before_selection(tmp_path, reach):
+    # One row holding two polygons, only one of which relates to the reach.
+    from shapely.geometry import MultiPolygon
+
+    multi = MultiPolygon([box(0, -500, 15000, 500), box(90000, 90000, 95000, 95000)])
+    gpd.GeoDataFrame([{"NAME": "both", "geometry": multi}], crs=METRIC_CRS).to_file(
+        tmp_path / "m.gpkg", driver="GPKG"
+    )
+
+    frame = LookupVariant(
+        name="watersheds", source_path=tmp_path / "m.gpkg"
+    ).build(reach)
+
+    # The distant part must be excluded even though it shares a row.
+    assert frame.geometry.iloc[0].area == pytest.approx(15000.0 * 1000.0, rel=1e-6)
+
+
+def test_invalid_source_geometry_is_repaired(tmp_path, reach):
+    # A bowtie: self-intersecting, so invalid as read.
+    bowtie = Polygon([(0, -500), (15000, 500), (15000, -500), (0, 500)])
+    gpd.GeoDataFrame([{"NAME": "bad", "geometry": bowtie}], crs=METRIC_CRS).to_file(
+        tmp_path / "bad.gpkg", driver="GPKG"
+    )
+    assert not read_source_layer(tmp_path / "bad.gpkg").is_valid.all()
+
+    frame = LookupVariant(
+        name="watersheds", source_path=tmp_path / "bad.gpkg"
+    ).build(reach)
+
+    assert frame.geometry.iloc[0].is_valid, "the result must be valid geometry"

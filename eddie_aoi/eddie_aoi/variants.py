@@ -120,6 +120,23 @@ class Availability:
     reason: str | None = None
 
 
+def _repair_invalid(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Repair only the invalid geometry in a frame.
+
+    External layers are not always valid - HQ100 is not - and an invalid
+    geometry makes area and overlay results unreliable. Only the invalid rows
+    are passed through GEOS's repair, because repair is expensive: one HQ100
+    part took 31 s on its own.
+    """
+    repaired = frame.copy()
+    invalid = ~repaired.geometry.is_valid
+    if invalid.any():
+        repaired.loc[invalid, repaired.geometry.name] = repaired.loc[
+            invalid, repaired.geometry.name
+        ].make_valid()
+    return repaired
+
+
 def frame_for(
     geometry,
     *,
@@ -348,21 +365,41 @@ class LookupVariant:
 
         features = read_source_layer(self.source_path)
         selector = self.selection_geometry(reach)
-        related = features[features.intersects(selector)]
 
-        if related.empty:
-            # An empty selection is a reportable condition, not a valid AOI.
+        # Explode first: external layers routinely pack many polygons into one
+        # row (HQ100 ships as a single row of 3724 parts), and a row boundary
+        # then says nothing about which areas relate to the reach.
+        parts = features.explode(index_parts=False).reset_index(drop=True)
+        near = parts[parts.intersects(selector)]
+
+        if near.empty:
+            # Nothing related is a reportable condition, not a valid AOI.
             raise PreparationError(
-                f"Variant {self.name!r} source layer contains no features related "
+                f"Variant {self.name!r} source layer contains nothing related "
                 f"to reach {reach.reach_id}."
             )
 
-        dissolved = related.geometry.union_all()
+        if self.mode == MODE_CLIP:
+            # Restrict before repairing: repairing the retained geometry is
+            # cheap, repairing a national extent is not (measured 0.6 s
+            # against 79 s, and an attempt on the full extent was OOM-killed).
+            retained = gpd.clip(near, selector)
+            if retained.empty:
+                raise PreparationError(
+                    f"Variant {self.name!r} has no area inside the neighbourhood "
+                    f"of reach {reach.reach_id}."
+                )
+        else:
+            retained = near.copy()
+
+        retained = _repair_invalid(retained)
+        dissolved = retained.geometry.union_all()
+
         return frame_for(
             dissolved,
             reach=reach,
             name=self.name,
-            params=dict(params),
+            params={**params, "mode": self.mode},
             source_sha256=self.source_sha256(),
         )
 
@@ -493,6 +530,9 @@ def default_registry(
         LookupVariant(
             name="watersheds",
             source_path=watersheds_path,
+            # A watershed is a meaningful unit: take it entire, not sliced at
+            # an arbitrary band around the river.
+            mode=MODE_FEATURES,
             unavailable_reason=(
                 "The watershed layer has not been supplied yet; it comes from "
                 "outside this module."
@@ -504,12 +544,19 @@ def default_registry(
             name="hq100",
             source_path=hq100_path,
             select_buffer_m=HQ100_SELECT_BUFFER_M,
+            # The national HQ100 extent is one connected polygon covering the
+            # floodplain of every watercourse, so whole-feature selection
+            # returns the whole country (55 km2 against the 3 km2 that
+            # actually relates to the Alzette km 35-50 reach).
+            mode=MODE_CLIP,
         )
     )
     registry.register(
         LookupVariant(
             name="hq_extreme",
             source_path=hq_extreme_path,
+            select_buffer_m=HQ100_SELECT_BUFFER_M,
+            mode=MODE_CLIP,
             unavailable_reason=(
                 "The extreme-flood extent has not been obtained yet."
             ),

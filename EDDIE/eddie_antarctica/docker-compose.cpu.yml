@@ -1,0 +1,48 @@
+# Opt out of the GPU reservation, for a host without an NVIDIA GPU.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# docker-compose.yml reserves an NVIDIA GPU for the Celery worker, so that on
+# the project host a plain `docker compose up -d` uses the GPU with no extra
+# flags. On a laptop without the NVIDIA container runtime that same
+# reservation makes the worker fail to start:
+#
+#     could not select device driver "nvidia" with capabilities: [[gpu]]
+#
+# Docker Compose has no conditional, so the reservation cannot be made
+# "best effort". This file removes it instead.
+#
+# `!reset` is the Compose mechanism for clearing a value an earlier file set.
+# Note that `devices: []` does NOT work - Compose keeps the earlier list, so
+# the reservation survives and the worker still fails.
+#
+# REQUIRES Docker Compose >= 2.24 for the `!reset` tag.
+# Check with: docker compose version
+#
+# HOW TO USE
+# ----------
+# Easiest: run ./up.sh, which detects the host and picks the right files.
+#
+# By hand:
+#
+#     docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.override.yml \
+#       -f docker-compose.cpu.yml \
+#       up -d
+#
+# IMPORTANT: passing -f switches off Compose's automatic loading of
+# docker-compose.override.yml, which is where this project's plugin bind
+# mounts live. List it explicitly or the plugins silently vanish from the
+# containers.
+#
+# Or set it once per shell, so plain `docker compose up -d` keeps working:
+#
+#     export COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.cpu.yml
+
+services:
+  celery_worker:
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
