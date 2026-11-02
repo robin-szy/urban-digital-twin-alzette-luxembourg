@@ -83,6 +83,20 @@ def test_input_in_another_crs_is_reprojected(tmp_path: pathlib.Path) -> None:
         assert np.nanmax(src.read(1)) == 5
 
 
+def test_resolution_coarsens_the_mosaic(tmp_path: pathlib.Path) -> None:
+    """--resolution overrides the finest input resolution, keeping the same extent."""
+    dem = write_dem(tmp_path / "dem.tif", 77000, 70020, np.full((20, 20), 3.0))
+    merged = tmp_path / "merged.tif"
+
+    prepare_dem.merge_dems([dem], merged, resolution=5)
+
+    with rasterio.open(merged) as src:
+        assert src.res == (5, 5)
+        assert (src.width, src.height) == (4, 4)
+        assert tuple(src.bounds) == (77000, 70000, 77020, 70020)
+        assert (src.read(1) == 3).all()
+
+
 def test_terrain_input_has_no_gaps_and_is_offset(tmp_path: pathlib.Path) -> None:
     """The ctb-tile input is EPSG:4326, NaN-free, gaps at the lowest height, everything offset."""
     values = np.array([[10.0, 20.0], [np.nan, 30.0]])

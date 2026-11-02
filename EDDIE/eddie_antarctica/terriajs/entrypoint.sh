@@ -25,7 +25,8 @@ ENV_VARS_TO_FILL='$CESIUM_ACCESS_TOKEN,$LINZ_BASEMAPS_API_KEY,$BACKEND_URL,$GEOS
 for FILE_TO_SUB in \
   "wwwroot/config.json" \
   "wwwroot/init/catalog.json" \
-  "wwwroot/date-selector.js"
+  "wwwroot/date-selector.js" \
+  "wwwroot/water-level-control.js"
 do
   SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "$FILE_TO_SUB")
   # Overwrite original file.
@@ -37,6 +38,13 @@ if ! grep -q "date-selector.js" wwwroot/index.html
 then
   sed -i \
     's#</body>#<script src="/date-selector.js?v=2"></script></body>#' \
+    wwwroot/index.html
+fi
+# Inject the 3D water-level control into Terria's page.
+if ! grep -q "water-level-control.js" wwwroot/index.html
+then
+  sed -i \
+    's#</body>#<script src="/water-level-control.js?v=7"></script></body>#' \
     wwwroot/index.html
 fi
 # Run original terria startup command

@@ -54,3 +54,10 @@ results/
 docs/
 # EDDIE/
 temp/
+
+# 3D water surface inputs (downloaded, not versioned)
+data/raw/River_kilometers/
+EDDIE/eddie_antarctica/data/terrain/
+data/raw/Buildings/
+data/raw/Flood_hazard/
+data/raw/Communes/
