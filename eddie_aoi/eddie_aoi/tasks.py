@@ -25,6 +25,7 @@ from eddie_aoi.config import fallback_reach_spec
 from eddie_aoi.db import create_schema, get_engine
 from eddie_aoi.sources import RiverSources
 from eddie_aoi.store import get_or_build, set_pinned
+from eddie_aoi.variant_store import get_or_build_variant
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,17 @@ HQ100_PATH_ENV = "AOI_HQ100_PATH"
 DEFAULT_HQ100_PATH = "/app/src/static/geo/HWGK2021_HQ100/HWGK2021_HQ100.shp"
 WATERSHEDS_PATH_ENV = "AOI_WATERSHEDS_PATH"
 HQ_EXTREME_PATH_ENV = "AOI_HQ_EXTREME_PATH"
+
+#: Variants built and persisted whenever a reach is built, so the map has
+#: something to show without a second request. hq100 is deliberately NOT here:
+#: clipped to a 15 km reach it is 81 parts and ~2 MB of GeoJSON, which belongs
+#: in a WMS layer rather than shipped to every viewer.
+DISPLAY_VARIANTS = (
+    ("corridor", {"half_width_m": 300.0}),
+    ("buffer", {"d": 1000.0}),
+    ("bbox", {"margin_m": 300.0}),
+    ("watersheds", {}),
+)
 
 
 def configured_sources() -> RiverSources:
@@ -115,6 +127,28 @@ def build_aoi_reach(
         if pinned:
             set_pinned(conn, reach.reach_id, True)
 
+    # Build the display variants in the same task, so a reach is ready to
+    # show the moment the task reports success.
+    variants = {}
+    registry = configured_registry()
+    with engine.begin() as conn:
+        for name, params in DISPLAY_VARIANTS:
+            try:
+                cached = get_or_build_variant(conn, reach, registry, name, **params)
+            except Exception as exc:
+                # One unavailable variant with no fallback must not sink the
+                # reach; it is reported instead.
+                log.warning("AOI variant %r unavailable for %s: %s",
+                            name, reach.reach_id, exc)
+                variants[name] = {"error": str(exc)}
+                continue
+            variants[cached.variant_key] = {
+                "variant": cached.variant,
+                "requested": cached.requested_variant,
+                "degraded": cached.degraded,
+                "degraded_reason": cached.degraded_reason,
+            }
+
     provenance = reach.provenance
     log.info("AOI reach ready: %s (%s)", reach.reach_id, provenance.get("method"))
 
@@ -128,6 +162,7 @@ def build_aoi_reach(
         "follows_mapped_river": provenance.get("follows_mapped_river"),
         "length_deviation_fraction": provenance.get("length_deviation_fraction"),
         "marker_count": provenance.get("marker_count"),
+        "variants": variants,
     }
 
 

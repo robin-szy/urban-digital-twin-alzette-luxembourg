@@ -172,3 +172,64 @@ def list_variants():
             for name, state in registry.availability().items()
         }
     )
+
+
+@blueprint.route("/aoi/reach/<reach_id>/variants.geojson", methods=["GET"])
+def reach_variants_geojson(reach_id):
+    """A reach's AOI as GeoJSON in EPSG:4326.
+
+    ``?variant_key=`` narrows it to one variant, which is how each Terria
+    catalog item gets its own styleable layer. Without it, every variant and
+    the centerline come back together - handy for QGIS and for debugging.
+
+    The reach is part of the route rather than a filter the client sends, so
+    a stale or widened filter cannot quietly serve the wrong area.
+    """
+    from eddie_aoi.db import get_engine
+    from eddie_aoi.publish import variants_geojson
+
+    variant_key = request.args.get("variant_key") or None
+    # "centerline" is not a row in the variant cache - it comes off the reach.
+    centerline_only = variant_key == "centerline"
+
+    with get_engine().connect() as conn:
+        collection = variants_geojson(
+            conn,
+            reach_id,
+            variant_key=None if centerline_only else variant_key,
+            include_centerline=True if centerline_only else None,
+        )
+
+    if collection is None:
+        return jsonify({"status": "not_found", "reach_id": reach_id}), 404
+
+    if centerline_only:
+        collection["features"] = [
+            f
+            for f in collection["features"]
+            if f["properties"].get("variant") == "centerline"
+        ]
+
+    return jsonify(collection)
+
+
+@blueprint.route("/terria-aoi-init/<reach_id>.json", methods=["GET"])
+def terria_aoi_init(reach_id):
+    """Terria catalog fragment showing one reach's AOI.
+
+    Same shape as the existing /terria-date-init route: a generated fragment
+    the map client loads as an initialisation source.
+    """
+    from eddie_aoi.db import get_engine
+    from eddie_aoi.publish import catalog_fragment
+
+    # The browser fetches the GeoJSON itself, so the URLs must be reachable
+    # from there, not from inside the container.
+    base_url = request.args.get("base_url") or request.host_url.rstrip("/")
+
+    with get_engine().connect() as conn:
+        fragment = catalog_fragment(conn, reach_id, base_url)
+
+    if fragment is None:
+        return jsonify({"status": "not_found", "reach_id": reach_id}), 404
+    return jsonify(fragment)

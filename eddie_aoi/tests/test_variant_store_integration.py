@@ -159,9 +159,14 @@ def test_cache_hit_updates_last_used(conn, reach):
     get_or_build_variant(conn, reach, registry, "corridor", half_width_m=300)
 
     def last_used():
+        # Scope to this test's reach: the shared database also holds real
+        # reaches with a corridor_300 row of their own.
         return conn.execute(
             sa.select(aoi_variant_cache.c.last_used_at).where(
-                aoi_variant_cache.c.variant_key == "corridor_300"
+                sa.and_(
+                    aoi_variant_cache.c.reach_id == reach.reach_id,
+                    aoi_variant_cache.c.variant_key == "corridor_300",
+                )
             )
         ).scalar_one()
 
