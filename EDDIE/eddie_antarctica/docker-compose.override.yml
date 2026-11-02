@@ -6,8 +6,43 @@ services:
       - ../../eddie_precip_interpolation/eddie_precip_interpolation:/venv/lib/python3.11/site-packages/eddie_precip_interpolation:ro
       - ../../eddie_water_level/eddie_water_level:/venv/lib/python3.11/site-packages/eddie_water_level:ro
       - ../../data_sources:/app/data_sources:ro
+      - ../../data/raw/River_kilometers:/app/data/river_kilometers:ro
+      - ../../eddie_buildings/eddie_buildings:/venv/lib/python3.11/site-packages/eddie_buildings:ro
+      - ../../data/raw/Buildings:/app/data/buildings:ro
+      - ./data/terrain:/app/data/terrain:ro
+      - ../../data/raw/Flood_hazard:/app/data/flood_hazard:ro
+      - ../../data/raw/Communes:/app/data/communes:ro
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
+      - RIVER_KILOMETRAGE_GPKG=/app/data/river_kilometers/kilometrage-des-cours-deau.gpkg
+      # Must equal the --height-offset given to scripts/prepare_dem.py
+      - TERRAIN_HEIGHT_OFFSET=${TERRAIN_HEIGHT_OFFSET:-0}
+      - BUILDINGS_GPKG=/app/data/buildings/ACT2023v2_Buildings3d_Footprints.gpkg
+      - TERRAIN_DEM=/app/data/terrain/dem_merged.tif
+      # Height in metres given to the 3D buildings without height data
+      - BUILDING_HEIGHT_M=${BUILDING_HEIGHT_M:-10}
+
+  gauge_collector:
+    # Fetches Alzette gauge readings from heichwaasser.lu into water_level_history (gauge_collector/README.md)
+    build:
+      context: .
+      dockerfile: docker/eddie.Dockerfile
+    container_name: gauge_collector_digital_twin
+    entrypoint: ["/venv/bin/python", "-m", "gauge_collector"]
+    command: ["serve"]
+    env_file:
+      - .env
+      - .env.docker-override
+    environment:
+      - PYTHONPATH=/opt/gauge_collector
+      # Minutes between incremental runs while the service is up (0 = off)
+      - COLLECT_INTERVAL_MIN=${COLLECT_INTERVAL_MIN:-15}
+    volumes:
+      - ../../gauge_collector:/opt/gauge_collector:ro
+    ports:
+      - "5002:5002"
+    depends_on:
+      - db_postgres
 
   celery_worker:
     volumes:
