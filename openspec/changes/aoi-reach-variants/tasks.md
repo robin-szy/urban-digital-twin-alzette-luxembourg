@@ -80,6 +80,10 @@
 
 ## 12. Frontend selection via WPS
 
+- [x] 12.0 Satisfy the EDDIE plugin contract: `tasks.py` (imported by the worker) and `blueprint.py` (imported and registered by the backend) are both mandatory for any `eddie_*` package in site-packages; mount the package and `src/static/geo` into backend and celery_worker; verify all six containers reach healthy with the module loaded
+- [x] 12.0b Expose REST endpoints on the plugin blueprint - POST `/aoi/reach` (validates, then queues a build), GET `/aoi/reach/<id>`, GET `/aoi/reaches`, GET `/aoi/variants`; verify over HTTP that a valid request returns a task id and builds, and that a reversed range, unknown river and missing fields are each refused with a reason
+- [x] 12.0c Read lookup-variant source paths from the environment (`AOI_HQ100_PATH`, `AOI_WATERSHEDS_PATH`, `AOI_HQ_EXTREME_PATH`) so availability reflects what is actually on disk; verify `/aoi/variants` reports hq100 available and names why the other two are not
+
 - [ ] 12.1 Implement a `build_aoi` PyWPS process with literal `river`, `km_start` and `km_end` inputs and register it in the empty `processes` list in `src/eddie_antartica/blueprint.py`; verify the process appears in the `/wps` GetCapabilities response
 - [ ] 12.2 Validate the selection before any build starts, refusing a reversed range, an unavailable river and kilometres outside the river's covered range without replacing the current AOI; verify a test per refusal case asserting the message and that the served AOI is unchanged
 - [ ] 12.3 Return build status through the existing task-status route so building, success and the specific validation failure reason are all observable; verify an integration test covering all three states

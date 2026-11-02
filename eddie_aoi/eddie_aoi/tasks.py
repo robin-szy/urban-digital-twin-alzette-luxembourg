@@ -38,6 +38,14 @@ DEFAULT_MARKERS_PATH = "/app/src/static/geo/kilometrage-des-cours-deau.gpkg"
 #: the mapped watercourse.
 RIVER_LINES_PATH_ENV = "AOI_RIVER_LINES_PATH"
 
+#: Externally supplied lookup-variant sources. Configuration, so relocating a
+#: layer needs no code change; absent ones leave their variant unavailable,
+#: which it reports rather than failing late.
+HQ100_PATH_ENV = "AOI_HQ100_PATH"
+DEFAULT_HQ100_PATH = "/app/src/static/geo/HWGK2021_HQ100/HWGK2021_HQ100.shp"
+WATERSHEDS_PATH_ENV = "AOI_WATERSHEDS_PATH"
+HQ_EXTREME_PATH_ENV = "AOI_HQ_EXTREME_PATH"
+
 
 def configured_sources() -> RiverSources:
     """The marker and mapped-river sources, from the environment."""
@@ -46,6 +54,26 @@ def configured_sources() -> RiverSources:
     return RiverSources(
         markers_path=markers,
         river_lines_path=Path(lines_raw) if lines_raw else None,
+    )
+
+
+def _optional_path(env_name: str, default: str | None = None) -> Path | None:
+    """A configured source path, or None when it is absent on disk."""
+    raw = os.environ.get(env_name, default)
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.exists() else None
+
+
+def configured_registry():
+    """The variant registry with its lookup sources taken from the environment."""
+    from eddie_aoi.variants import default_registry
+
+    return default_registry(
+        hq100_path=_optional_path(HQ100_PATH_ENV, DEFAULT_HQ100_PATH),
+        watersheds_path=_optional_path(WATERSHEDS_PATH_ENV),
+        hq_extreme_path=_optional_path(HQ_EXTREME_PATH_ENV),
     )
 
 
