@@ -3,6 +3,7 @@
 import os
 import pathlib
 
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
@@ -13,7 +14,8 @@ from eddie_precip_interpolation.tasks import (
     derive_precipitation_history,
 )
 
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from celery import chain
 from flask import jsonify, request
 
@@ -487,9 +489,17 @@ def terria_date_init(
             }
         ), 400
 
-    current_time = (
-        f"{selected_date}T00:00:00Z"
+    # Interpret selected date as Luxembourg local midnight
+    local_midnight = datetime.strptime(
+        selected_date, "%Y-%m-%d"
+    ).replace(
+        tzinfo=ZoneInfo("Europe/Luxembourg")
     )
+
+    # Convert Luxembourg local time to UTC
+    current_time = local_midnight.astimezone(
+        timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     precipitation_available = (
         precip_available == "1"
