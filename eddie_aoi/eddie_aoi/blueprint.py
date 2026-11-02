@@ -233,3 +233,69 @@ def terria_aoi_init(reach_id):
     if fragment is None:
         return jsonify({"status": "not_found", "reach_id": reach_id}), 404
     return jsonify(fragment)
+
+
+@blueprint.route("/terria-aoi-init/fallback.json", methods=["GET"])
+def terria_aoi_init_fallback():
+    """Terria catalog fragment for the CONFIGURED fallback reach.
+
+    Loaded from Terria's ``initializationUrls``, so the map shows an area of
+    interest on startup. The reach is not written into Terria's config: this
+    resolves ``AOI_FALLBACK_REACH``, so changing which AOI loads by default
+    is an environment variable plus a backend restart.
+
+    Always returns a valid catalog, even when the reach is not built yet -
+    Terria loads this at startup and must not be handed an error.
+    """
+    from eddie_aoi.config import fallback_reach_spec
+    from eddie_aoi.db import get_engine
+    from eddie_aoi.errors import PreparationError
+    from eddie_aoi.publish import catalog_fragment
+    from eddie_aoi.reach import reach_id as make_reach_id
+    from eddie_aoi.store import read_cached
+
+    base_url = request.args.get("base_url") or request.host_url.rstrip("/")
+
+    try:
+        spec = fallback_reach_spec()
+    except PreparationError as exc:
+        log.error("Configured fallback reach is invalid: %s", exc)
+        return jsonify(_empty_catalog(f"AOI unavailable: {exc}"))
+
+    reach_id = make_reach_id(spec.river, spec.km_start, spec.km_end)
+
+    with get_engine().connect() as conn:
+        cached = read_cached(conn, reach_id)
+
+    if cached is None or not cached.is_ready:
+        # Build it now rather than show an empty map. A few seconds on the
+        # first load; afterwards it is a cache hit.
+        try:
+            from eddie_aoi.tasks import build_aoi_reach
+
+            log.info("Fallback reach %s not built yet; building now.", reach_id)
+            build_aoi_reach(spec.river, spec.km_start, spec.km_end, pinned=True)
+        except Exception as exc:
+            log.error("Could not build the fallback reach %s: %s", reach_id, exc)
+            return jsonify(_empty_catalog(f"AOI unavailable: {exc}"))
+
+    with get_engine().connect() as conn:
+        fragment = catalog_fragment(conn, reach_id, base_url)
+
+    if fragment is None:
+        return jsonify(_empty_catalog("AOI unavailable: the reach could not be read."))
+    return jsonify(fragment)
+
+
+def _empty_catalog(message: str) -> dict:
+    """A valid but empty catalog carrying the reason, for Terria's startup."""
+    return {
+        "catalog": [
+            {
+                "type": "group",
+                "name": "Area of interest",
+                "description": message,
+                "members": [],
+            }
+        ]
+    }

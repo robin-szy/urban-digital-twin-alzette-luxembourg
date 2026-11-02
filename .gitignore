@@ -54,3 +54,6 @@ results/
 docs/
 # EDDIE/
 temp/
+
+# Generated Terria config (produced from terriajs/client_config.json)
+EDDIE/eddie_antarctica/terriajs/config.generated.json
