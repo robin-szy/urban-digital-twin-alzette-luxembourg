@@ -62,6 +62,41 @@ reach_cache = sa.Table(
 )
 
 
+aoi_variant_cache = sa.Table(
+    "aoi_variant_cache",
+    metadata,
+    # Keyed on the REQUESTED variant, not the one actually used. A degraded
+    # entry records both, so it can be recognised and rebuilt once the real
+    # source appears.
+    sa.Column(
+        "reach_id",
+        sa.Text,
+        sa.ForeignKey("reach_cache.reach_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("variant_key", sa.Text, primary_key=True),
+    # Lookup variants dissolve to a MultiPolygon, computed ones to a Polygon,
+    # so the column has to accept either.
+    sa.Column("geometry", Geometry("GEOMETRY", srid=METRIC_SRID), nullable=False),
+    sa.Column("variant", sa.Text, nullable=False),
+    sa.Column("requested_variant", sa.Text, nullable=False),
+    sa.Column("params", sa.JSON, nullable=True),
+    # Invalidation trigger: the source the geometry was built from.
+    sa.Column("source_sha256", sa.Text, nullable=True),
+    sa.Column(
+        "degraded", sa.Boolean, nullable=False, server_default=sa.text("false")
+    ),
+    sa.Column("degraded_reason", sa.Text, nullable=True),
+    sa.Column("built_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "last_used_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+)
+
+
 def database_url() -> str:
     """Connection URL from the EDDIE PostGIS environment variables."""
     host = os.environ.get("POSTGRES_HOST", "localhost")

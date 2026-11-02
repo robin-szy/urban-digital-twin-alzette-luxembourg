@@ -46,9 +46,9 @@
 
 ## 7. Variant persistence and invalidation
 
-- [ ] 7.1 Create the `aoi_variant_cache` table keyed on reach and variant key, with geometry SRID 2169, params, source hash and timestamps; verify the migration applies and the composite key rejects a duplicate insert
-- [ ] 7.2 Implement variant caching with parameters encoded in the variant key, so differing parameters build separately rather than reusing a neighbouring entry; verify tests for a cache hit on repeat request and a miss when a parameter differs
-- [ ] 7.3 Implement source-hash invalidation, including not serving a degraded entry once its real source becomes available; verify tests for a changed source triggering a rebuild, an unchanged source serving from cache, and a degraded entry being rebuilt after its source appears
+- [x] 7.1 Create the `aoi_variant_cache` table keyed on reach and variant key, with geometry SRID 2169, params, source hash and timestamps; verify the migration applies and the composite key rejects a duplicate insert
+- [x] 7.2 Implement variant caching with parameters encoded in the variant key, so differing parameters build separately rather than reusing a neighbouring entry; verify tests for a cache hit on repeat request and a miss when a parameter differs
+- [x] 7.3 Implement source-hash invalidation, including not serving a degraded entry once its real source becomes available; verify tests for a changed source triggering a rebuild, an unchanged source serving from cache, and a degraded entry being rebuilt after its source appears
 - [x] 7.4 Add source-layer read caching with a spatial index, shared across variants and reaches, separate from variant caching; verify a test that two lookup variants over one source layer read it once
 
 ## 8. Resolver and dataset bindings
