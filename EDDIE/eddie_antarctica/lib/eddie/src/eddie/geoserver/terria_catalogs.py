@@ -106,6 +106,7 @@ def create_vector_layer_catalog_item(
         return {
 	    "id": "interpolated-water-level-through-time",
             "type": "wms",
+            "crs": "EPSG:4326",
             "name": "Interpolated water level through time",
             "description": (
                 "Time-enabled water-surface elevation along the "
