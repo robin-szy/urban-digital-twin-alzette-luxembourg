@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Protocol
 
 import geopandas as gpd
+import numpy as np
+import shapely
 from shapely.geometry import box
 
 from eddie_aoi.constants import METRIC_CRS
@@ -118,6 +120,17 @@ class Availability:
 
     available: bool
     reason: str | None = None
+
+
+def dissolve(geometries) -> "shapely.geometry.base.BaseGeometry":
+    """Union a GeoSeries into one geometry, across geopandas versions.
+
+    ``GeoSeries.union_all()`` only exists from geopandas 1.0; the EDDIE
+    container image ships 0.14.4, where the equivalent is the
+    ``unary_union`` property. Going through shapely's own ``union_all``
+    works on both, since shapely 2.0+ is present either way.
+    """
+    return shapely.union_all(np.asarray(geometries))
 
 
 def _repair_invalid(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -393,7 +406,7 @@ class LookupVariant:
             retained = near.copy()
 
         retained = _repair_invalid(retained)
-        dissolved = retained.geometry.union_all()
+        dissolved = dissolve(retained.geometry)
 
         return frame_for(
             dissolved,

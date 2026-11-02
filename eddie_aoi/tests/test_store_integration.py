@@ -3,6 +3,11 @@
 Marked integration: needs db_postgres_digital_twin running. Each test works
 in a transaction that is rolled back, so the shared database is left as it
 was found.
+
+They use a river name that does not exist in the real marker source. The
+database is shared with the running stack, which holds genuine reaches for
+real rivers - a test asserting a cache MISS would otherwise fail as soon as
+someone built that same reach for real.
 """
 import pytest
 import sqlalchemy as sa
@@ -32,7 +37,7 @@ KMS = [35.0 + i for i in range(16)]
 @pytest.fixture
 def reach(straight_river, straight_markers):
     return build_reach_from_geometries(
-        "Alzette", 35.0, 50.0, straight_river, straight_markers, KMS,
+        "Testbach", 35.0, 50.0, straight_river, straight_markers, KMS,
         source_sha256="sha-one",
     )
 
@@ -62,7 +67,7 @@ def test_range_constraint_rejects_a_reversed_reach(conn):
         conn.execute(
             reach_cache.insert().values(
                 reach_id="x_050000_035000",
-                river="Alzette",
+                river="Testbach",
                 km_start=50.0,
                 km_end=35.0,
                 status=STATUS_READY,
@@ -75,7 +80,7 @@ def test_status_constraint_rejects_an_unknown_status(conn):
         conn.execute(
             reach_cache.insert().values(
                 reach_id="x_035000_050000",
-                river="Alzette",
+                river="Testbach",
                 km_start=35.0,
                 km_end=50.0,
                 status="nonsense",
@@ -106,7 +111,7 @@ def test_cache_hit_does_not_rebuild(conn, reach):
         calls.append(1)
         return reach
 
-    returned = get_or_build(conn, "Alzette", 35.0, 50.0, build,
+    returned = get_or_build(conn, "Testbach", 35.0, 50.0, build,
                             current_source_sha256="sha-one")
 
     assert not calls, "a ready, current cache entry must not rebuild"
@@ -132,26 +137,26 @@ def test_cache_hit_updates_last_used(conn, reach):
 
 
 def test_a_building_reach_is_not_served(conn, reach):
-    mark_building(conn, "Alzette", 35.0, 50.0)
+    mark_building(conn, "Testbach", 35.0, 50.0)
 
     cached = read_cached(conn, reach.reach_id)
     assert cached.status == STATUS_BUILDING
     assert cached.reach is None, "no geometry may be served while building"
 
     with pytest.raises(ReachNotReady, match="still building"):
-        get_or_build(conn, "Alzette", 35.0, 50.0, lambda: reach)
+        get_or_build(conn, "Testbach", 35.0, 50.0, lambda: reach)
 
 
 def test_a_failed_reach_returns_its_recorded_reason(conn, reach):
-    mark_failed(conn, "Alzette", 35.0, 50.0, "Markers do not follow the river route")
+    mark_failed(conn, "Testbach", 35.0, 50.0, "Markers do not follow the river route")
 
     with pytest.raises(ReachNotReady, match="Markers do not follow the river route"):
-        get_or_build(conn, "Alzette", 35.0, 50.0, lambda: reach)
+        get_or_build(conn, "Testbach", 35.0, 50.0, lambda: reach)
 
 
 def test_a_failed_reach_loses_any_previous_geometry(conn, reach):
     save_reach(conn, reach)
-    mark_failed(conn, "Alzette", 35.0, 50.0, "source changed and no longer validates")
+    mark_failed(conn, "Testbach", 35.0, 50.0, "source changed and no longer validates")
 
     cached = read_cached(conn, reach.reach_id)
     assert cached.status == STATUS_FAILED
@@ -163,9 +168,9 @@ def test_build_failure_is_recorded_and_reraised(conn):
         raise ValueError("mapped river is disconnected")
 
     with pytest.raises(ValueError, match="disconnected"):
-        get_or_build(conn, "Alzette", 35.0, 50.0, build)
+        get_or_build(conn, "Testbach", 35.0, 50.0, build)
 
-    cached = read_cached(conn, "alzette_035000_050000")
+    cached = read_cached(conn, "testbach_035000_050000")
     assert cached.status == STATUS_FAILED
     assert "disconnected" in cached.error
 
@@ -177,7 +182,7 @@ def test_a_miss_builds_and_persists(conn, reach):
         calls.append(1)
         return reach
 
-    get_or_build(conn, "Alzette", 35.0, 50.0, build)
+    get_or_build(conn, "Testbach", 35.0, 50.0, build)
 
     assert len(calls) == 1
     assert read_cached(conn, reach.reach_id).is_ready
@@ -190,7 +195,7 @@ def test_unchanged_source_serves_from_cache(conn, reach):
     save_reach(conn, reach)
     calls = []
 
-    get_or_build(conn, "Alzette", 35.0, 50.0,
+    get_or_build(conn, "Testbach", 35.0, 50.0,
                  lambda: calls.append(1) or reach,
                  current_source_sha256="sha-one")
 
@@ -205,7 +210,7 @@ def test_changed_source_triggers_a_rebuild(conn, reach):
         calls.append(1)
         return reach
 
-    get_or_build(conn, "Alzette", 35.0, 50.0, build,
+    get_or_build(conn, "Testbach", 35.0, 50.0, build,
                  current_source_sha256="sha-two")
 
     assert len(calls) == 1, "a superseded source must rebuild"
@@ -213,7 +218,7 @@ def test_changed_source_triggers_a_rebuild(conn, reach):
 
 def test_staleness_needs_both_hashes():
     base = dict(
-        reach_id="r", river="Alzette", km_start=35.0, km_end=50.0,
+        reach_id="r", river="Testbach", km_start=35.0, km_end=50.0,
         status=STATUS_READY, pinned=False, error=None, reach=object(),
     )
     assert is_stale(CachedReach(source_sha256="a", **base), "b")
