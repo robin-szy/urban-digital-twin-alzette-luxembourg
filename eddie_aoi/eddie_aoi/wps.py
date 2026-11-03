@@ -165,8 +165,23 @@ class BuildAoiReach(Process):
             # Without this PyWPS renders processVersion="None" into
             # DescribeProcess, which is not a valid version string.
             version="1.0.0",
-            store_supported=True,
-            status_supported=True,
+            # Run synchronously, and advertise that.
+            #
+            # src/pywps.cfg sets [processing] mode=docker with
+            # docker_img=container, an image this deployment does not have.
+            # PyWPS only uses that backend for an ASYNCHRONOUS execution, and
+            # when it forks into it the gunicorn worker dies with
+            # "Parent changed, shutting down" - the request then hangs and
+            # the backend stops answering until it is recreated.
+            #
+            # Terria asks for async whenever the process advertises these as
+            # supported, so declaring them False keeps it on the synchronous
+            # path, which returns the full result inline in about 1.6 s.
+            # Revisit if a variant ever makes this slow enough to need
+            # progress reporting - the fix then is the deployment's
+            # processing mode, not this flag.
+            store_supported=False,
+            status_supported=False,
         )
 
     def _handler(self, request, response):
