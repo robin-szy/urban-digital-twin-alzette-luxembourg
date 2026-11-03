@@ -137,6 +137,9 @@ class BuildAoiReach(Process):
             ),
             inputs=inputs,
             outputs=outputs,
+            # Without this PyWPS renders processVersion="None" into
+            # DescribeProcess, which is not a valid version string.
+            version="1.0.0",
             store_supported=True,
             status_supported=True,
         )
