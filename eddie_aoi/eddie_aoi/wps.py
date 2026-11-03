@@ -15,6 +15,7 @@ import json
 import logging
 
 from pywps import ComplexOutput, Format, LiteralInput, LiteralOutput, Process
+from pywps.inout.literaltypes import AnyValue
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,25 @@ def _known_rivers() -> list[str] | None:
     except Exception as exc:  # the source may be absent in some deployments
         log.warning("Could not list rivers for the WPS form: %s", exc)
         return None
+
+
+def _as_km(value, label: str) -> float:
+    """Coerce a kilometre field to a number.
+
+    Declaring the input as ``float`` means PyWPS rejects a non-numeric value
+    before the handler runs ("Could not convert value 'abc' to format
+    'float'"), so in practice this only guards a direct call. Note that a
+    comma decimal such as ``46,3`` is rejected by that same validation - the
+    field needs a dot.
+    """
+    from eddie_aoi.errors import PreparationError
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise PreparationError(
+            f"{label} must be a number, for example 35.0 - got {value!r}."
+        ) from None
 
 
 class BuildAoiReach(Process):
@@ -75,6 +95,10 @@ class BuildAoiReach(Process):
                     "source."
                 ),
                 default=35.0,
+                # Without AnyValue, PyWPS emits a LiteralData element with no
+                # AllowedValues and no AnyValue, which TerriaJS cannot convert
+                # into a form field - it rejects the entire process.
+                allowed_values=AnyValue(),
                 min_occurs=1,
                 max_occurs=1,
             ),
@@ -84,6 +108,7 @@ class BuildAoiReach(Process):
                 data_type="float",
                 abstract="River kilometre where the area of interest ends.",
                 default=50.0,
+                allowed_values=AnyValue(),
                 min_occurs=1,
                 max_occurs=1,
             ),
@@ -151,8 +176,8 @@ class BuildAoiReach(Process):
         from eddie_aoi.tasks import build_aoi_reach
 
         river = request.inputs["river"][0].data
-        km_start = float(request.inputs["km_start"][0].data)
-        km_end = float(request.inputs["km_end"][0].data)
+        km_start = _as_km(request.inputs["km_start"][0].data, "Start kilometre")
+        km_end = _as_km(request.inputs["km_end"][0].data, "End kilometre")
 
         response.update_status(
             f"Building the area of interest for {river} km {km_start}-{km_end}", 10
