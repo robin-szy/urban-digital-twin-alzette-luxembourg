@@ -5,7 +5,16 @@
     "east": 6.534817,
     "north": 50.183317
   },
-  "catalog": [],
+  "catalog": [
+    {
+      "id": "aoi-selector",
+      "type": "wps",
+      "name": "Select area of interest (river km)",
+      "url": "$BACKEND_URL/aoi/wps",
+      "identifier": "build_aoi_reach",
+      "description": "Choose a river and a kilometre range. The range is validated against the official kilometre markers before anything is built. The result is drawn on the map; any variant served as a substitute is labelled as one."
+    }
+  ],
   "baseMaps": {
     "defaultBaseMapId": "basemap-openstreetmap",
     "previewBaseMapId": "basemap-openstreetmap"

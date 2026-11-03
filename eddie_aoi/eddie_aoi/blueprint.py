@@ -29,6 +29,45 @@ blueprint = Blueprint(
 )
 
 
+def _wps_service():
+    """This plugin's own WPS service, built once on first use.
+
+    The app's own /wps endpoint keeps its process list in
+    src/eddie_antartica/blueprint.py, which is COPYed into the image at build
+    time - so registering there needs an image rebuild, and the plugin would
+    be editing a file it does not own. Serving the process from the plugin
+    instead keeps it self-contained and live-reloadable through the existing
+    bind mount.
+    """
+    global _SERVICE
+    if _SERVICE is None:
+        # Imported lazily: pywps reads its config at import time, and a
+        # deployment without it should not break the rest of the blueprint.
+        from pywps import Service
+
+        from eddie_aoi.wps import BuildAoiReach
+
+        _SERVICE = Service([BuildAoiReach()], [WPS_CONFIG])
+    return _SERVICE
+
+
+_SERVICE = None
+
+#: PyWPS configuration, as the app already ships it.
+WPS_CONFIG = "src/pywps.cfg"
+
+
+@blueprint.route("/aoi/wps", methods=["GET", "POST"])
+def aoi_wps():
+    """OGC Web Processing Service for the AOI selector.
+
+    TerriaJS renders a WebProcessingServiceCatalogFunction pointed at this
+    URL as an input form generated from the process description, which is how
+    the river and kilometre fields appear in the map client.
+    """
+    return _wps_service()
+
+
 def _bad_request(message, **extra):
     return jsonify({"status": "error", "message": message, **extra}), 400
 
