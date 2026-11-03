@@ -48,14 +48,21 @@ WATERSHEDS_PATH_ENV = "AOI_WATERSHEDS_PATH"
 HQ_EXTREME_PATH_ENV = "AOI_HQ_EXTREME_PATH"
 
 #: Variants built and persisted whenever a reach is built, so the map has
-#: something to show without a second request. hq100 is deliberately NOT here:
-#: clipped to a 15 km reach it is 81 parts and ~2 MB of GeoJSON, which belongs
-#: in a WMS layer rather than shipped to every viewer.
+#: something to show without a second request.
+#:
+#: hq100 is included even though it is large - 81 parts and about 2 MB of
+#: GeoJSON clipped to a 15 km reach - because the catalog fragment leaves it
+#: off the workbench by default, so a viewer only downloads it on ticking the
+#: layer. It is the one dataset here that shows REAL data cut to the AOI
+#: rather than the AOI outline itself. Building it is cheap (0.5-1.0 s); only
+#: transferring it is not. If it ever needs to be on by default, move it to a
+#: WMS layer so the rendering happens server-side.
 DISPLAY_VARIANTS = (
     ("corridor", {"half_width_m": 300.0}),
     ("buffer", {"d": 1000.0}),
     ("bbox", {"margin_m": 300.0}),
     ("watersheds", {}),
+    ("hq100", {}),
 )
 
 

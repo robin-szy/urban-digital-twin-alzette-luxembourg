@@ -275,6 +275,17 @@ def terria_aoi_init(reach_id):
     return jsonify(fragment)
 
 
+@blueprint.route("/terria-aoi-init/all.json", methods=["GET"])
+def terria_aoi_init_all():
+    """Terria catalog fragment listing every area of interest built so far."""
+    from eddie_aoi.db import get_engine
+    from eddie_aoi.publish import catalog_fragment_all
+
+    base_url = request.args.get("base_url") or request.host_url.rstrip("/")
+    with get_engine().connect() as conn:
+        return jsonify(catalog_fragment_all(conn, base_url))
+
+
 @blueprint.route("/terria-aoi-init/fallback.json", methods=["GET"])
 def terria_aoi_init_fallback():
     """Terria catalog fragment for the CONFIGURED fallback reach.

@@ -175,6 +175,9 @@ VARIANT_STYLES = {
     "bbox": {"stroke": "#999999", "stroke-width": 1, "fill-opacity": 0},
     "watersheds": {"stroke": "#ff7f00", "stroke-width": 2, "fill": "#ff7f00",
                    "fill-opacity": 0.10},
+    # Actual data clipped to the AOI, so it is filled rather than outlined.
+    "hq100": {"stroke": "#1f6fb4", "stroke-width": 1, "fill": "#2b8cbe",
+              "fill-opacity": 0.55},
 }
 DEGRADED_STYLE = {"stroke": "#e31a1c", "stroke-width": 2, "fill": "#e31a1c",
                   "fill-opacity": 0.10}
@@ -185,6 +188,7 @@ HUMAN_NAMES = {
     "buffer": "AOI buffer",
     "bbox": "AOI bounding box",
     "watersheds": "AOI watersheds",
+    "hq100": "HQ100 flood zone, clipped to this AOI",
 }
 
 
@@ -280,3 +284,48 @@ def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict 
         )
 
     return {"catalog": [group], "workbench": on_by_default}
+
+
+def catalog_fragment_all(conn: sa.Connection, base_url: str, limit: int = 50) -> dict:
+    """A Terria catalog fragment with one group per cached reach.
+
+    Lets a viewer browse every area of interest that has been built, rather
+    than only the one the selector last produced. Nothing is on the workbench
+    by default - opening five reaches at once would be noise.
+    """
+    from eddie_aoi.db import reach_cache
+
+    rows = conn.execute(
+        sa.select(reach_cache.c.reach_id)
+        .where(reach_cache.c.status == "ready")
+        .order_by(reach_cache.c.last_used_at.desc())
+        .limit(limit)
+    ).scalars().all()
+
+    groups = []
+    for reach_id in rows:
+        fragment = catalog_fragment(conn, reach_id, base_url)
+        if fragment is None:
+            continue
+        group = fragment["catalog"][0]
+        # Off by default: this is a browser, not a default view.
+        for member in group["members"]:
+            member["show"] = False
+        group["isOpen"] = False
+        groups.append(group)
+
+    return {
+        "catalog": [
+            {
+                "type": "group",
+                "name": f"Areas of interest ({len(groups)} built)",
+                "description": (
+                    "Every reach built so far. Expand one and tick its layers. "
+                    "'HQ100 flood zone' is real flood data cut to that AOI; the "
+                    "others are the AOI outlines themselves."
+                ),
+                "isOpen": True,
+                "members": groups,
+            }
+        ]
+    }

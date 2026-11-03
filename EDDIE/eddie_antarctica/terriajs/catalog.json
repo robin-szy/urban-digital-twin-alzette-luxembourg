@@ -15,6 +15,13 @@
       "description": "Choose a river and a kilometre range. The range is validated against the official kilometre markers before anything is built. The result is drawn on the map; any variant served as a substitute is labelled as one."
     },
     {
+      "id": "aoi-browse",
+      "type": "terria-reference",
+      "name": "Areas of interest (all built)",
+      "isGroup": true,
+      "url": "$BACKEND_URL/terria-aoi-init/all.json"
+    },
+    {
       "id": "aoi-wps-all",
       "type": "wps-getCapabilities",
       "name": "AOI tools (all WPS processes)",
