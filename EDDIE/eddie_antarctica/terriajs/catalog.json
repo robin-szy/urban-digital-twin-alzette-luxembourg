@@ -9,7 +9,7 @@
     {
       "id": "aoi-selector",
       "type": "wps",
-      "name": "Select area of interest (river km)",
+      "name": "AOI selector",
       "url": "$BACKEND_URL/aoi/wps",
       "identifier": "build_aoi_reach",
       "description": "Choose a river and a kilometre range. The range is validated against the official kilometre markers before anything is built. The result is drawn on the map; any variant served as a substitute is labelled as one."
@@ -17,7 +17,7 @@
     {
       "id": "aoi-browse",
       "type": "terria-reference",
-      "name": "Areas of interest (all built)",
+      "name": "AOI browser (all built)",
       "isGroup": true,
       "url": "$BACKEND_URL/terria-aoi-init/all.json"
     },
