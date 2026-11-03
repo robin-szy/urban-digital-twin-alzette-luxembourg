@@ -197,3 +197,30 @@ def test_no_warning_when_nothing_is_degraded(conn, reach, tmp_path):
 def test_base_url_trailing_slash_is_tolerated(conn, populated):
     group = catalog_fragment(conn, populated.reach_id, BASE + "/")["catalog"][0]
     assert "//aoi/" not in group["members"][0]["url"]
+
+
+def test_fragment_lists_default_layers_on_the_workbench(conn, populated):
+    # TerriaJS v8 only loads items onto the workbench from this list; "show"
+    # alone leaves them in the catalogue, which is what happened in the map.
+    fragment = catalog_fragment(conn, populated.reach_id, BASE)
+
+    assert "workbench" in fragment
+    ids = fragment["workbench"]
+    assert any("centerline" in i for i in ids)
+    assert any("corridor" in i for i in ids)
+    assert not any("bbox" in i for i in ids)
+
+
+def test_workbench_ids_all_exist_as_members(conn, populated):
+    fragment = catalog_fragment(conn, populated.reach_id, BASE)
+    member_ids = {m["id"] for m in fragment["catalog"][0]["members"]}
+
+    for item in fragment["workbench"]:
+        assert item in member_ids, f"{item} is on the workbench but not a member"
+
+
+def test_workbench_matches_the_shown_members(conn, populated):
+    fragment = catalog_fragment(conn, populated.reach_id, BASE)
+    shown = {m["id"] for m in fragment["catalog"][0]["members"] if m.get("show")}
+
+    assert set(fragment["workbench"]) == shown

@@ -258,6 +258,13 @@ def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict 
             )
         members.append(member)
 
+    # TerriaJS v8 loads items onto the workbench from a top-level "workbench"
+    # list of ids; "show" alone only controls visibility once an item is
+    # already there, which is why setting it was not enough.
+    on_by_default = [
+        member["id"] for member in members if member.get("show")
+    ]
+
     group = {
         "type": "group",
         "name": f"Area of interest - {cached_reach.river} "
@@ -272,4 +279,4 @@ def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict 
             "area that was requested."
         )
 
-    return {"catalog": [group]}
+    return {"catalog": [group], "workbench": on_by_default}
