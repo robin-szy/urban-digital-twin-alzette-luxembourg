@@ -18,6 +18,7 @@ validates every marker, which is too slow for a request thread.
 from __future__ import annotations
 
 import logging
+import os
 
 from flask import Blueprint, jsonify, request
 
@@ -338,3 +339,29 @@ def _empty_catalog(message: str) -> dict:
             }
         ]
     }
+
+
+@blueprint.route("/outputs/<path:filename>", methods=["GET"])
+def wps_outputs(filename):
+    """Serve a stored WPS response document.
+
+    Terria executes a WPS process asynchronously: it sends
+    storeExecuteResponse=true, PyWPS answers ProcessAccepted with a
+    statusLocation under ``outputurl`` from src/pywps.cfg
+    (http://<backend>/outputs/<uuid>.xml), and the client then polls that
+    URL until the job finishes.
+
+    Nothing in the app served that path, so every asynchronous execution
+    ended in a 404 at the client even though the process itself had
+    succeeded. PyWPS only writes the file; serving it is the application's
+    job - the same split as the app's own /terrain route.
+    """
+    from flask import send_from_directory
+    from pywps import configuration as pywps_config
+
+    output_dir = pywps_config.get_config_value("server", "outputpath")
+    if not output_dir:
+        return jsonify({"status": "error", "message": "No WPS outputpath configured."}), 500
+
+    # send_from_directory rejects traversal outside the directory.
+    return send_from_directory(os.path.abspath(output_dir), filename)
