@@ -29,3 +29,4 @@ services:
       # client_config.json with the $URL placeholders already filled, so the
       # entrypoint's in-place substitution cannot dirty the working tree.
       - ./terriajs/config.generated.json:/app/wwwroot/config.json
+      - ./terriajs/catalog.generated.json:/app/wwwroot/init/catalog.json

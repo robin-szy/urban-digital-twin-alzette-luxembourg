@@ -7,7 +7,7 @@
   },
   "catalog": [],
   "baseMaps": {
-    "defaultBaseMapId": "basemap-bing-aerial-with-labels",
-    "previewBaseMapId": "basemap-bing-aerial-with-labels"
+    "defaultBaseMapId": "basemap-openstreetmap",
+    "previewBaseMapId": "basemap-openstreetmap"
   }
 }
