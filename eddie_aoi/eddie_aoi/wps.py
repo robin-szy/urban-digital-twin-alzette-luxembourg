@@ -21,6 +21,24 @@ log = logging.getLogger(__name__)
 
 GEOJSON_FORMAT = Format("application/geo+json", extension=".geojson", encoding="utf-8")
 
+#: TerriaJS parses an output in this format as a catalog member and adds it
+#: to the map straight away (createCatalogItemFromJson). Without it the
+#: result only appears after reloading the page, because the catalog
+#: fragments are init sources fetched once at startup.
+TERRIA_MEMBER_FORMAT = Format(
+    "application/vnd.terriajs.catalog-member+json",
+    extension=".json",
+    encoding="utf-8",
+)
+
+
+def _backend_base_url() -> str:
+    """Browser-reachable base URL, from the PyWPS server configuration."""
+    from pywps import configuration as pywps_config
+
+    url = (pywps_config.get_config_value("server", "url") or "").strip()
+    return url[: -len("/wps")] if url.endswith("/wps") else url.rstrip("/")
+
 #: Shown in the form when the marker source cannot be read for a live list.
 FALLBACK_RIVER_HINT = "Alzette"
 
@@ -124,6 +142,16 @@ class BuildAoiReach(Process):
                     "substitute for a variant whose source is unavailable."
                 ),
                 supported_formats=[GEOJSON_FORMAT],
+                as_reference=False,
+            ),
+            ComplexOutput(
+                "layer",
+                "Area of interest layer",
+                abstract=(
+                    "The AOI as a Terria catalog member, so the map shows it "
+                    "as soon as the process finishes."
+                ),
+                supported_formats=[TERRIA_MEMBER_FORMAT],
                 as_reference=False,
             ),
             LiteralOutput(
@@ -231,6 +259,28 @@ class BuildAoiReach(Process):
 
         response.outputs["aoi"].data_format = GEOJSON_FORMAT
         response.outputs["aoi"].data = json.dumps(collection)
+
+        # A mappable catalog member, so Terria draws the result immediately
+        # rather than only after the page is reloaded. It references the
+        # per-variant endpoint by URL instead of embedding the geometry,
+        # keeping the Execute response small.
+        base = _backend_base_url()
+        response.outputs["layer"].data_format = TERRIA_MEMBER_FORMAT
+        response.outputs["layer"].data = json.dumps(
+            {
+                "type": "geojson",
+                "name": f"AOI corridor - {river} km {km_start}-{km_end}",
+                "url": f"{base}/aoi/reach/{reach_id}/variants.geojson"
+                f"?variant_key=corridor_300",
+                "style": {
+                    "stroke": "#33a02c",
+                    "stroke-width": 2,
+                    "fill": "#33a02c",
+                    "fill-opacity": 0.12,
+                },
+                "description": summary,
+            }
+        )
         response.outputs["reach_id"].data = reach_id
         response.outputs["summary"].data = summary
         response.outputs["catalog_url"].data = f"/terria-aoi-init/{reach_id}.json"
