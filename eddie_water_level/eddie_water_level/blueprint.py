@@ -410,6 +410,24 @@ def _water_surface_init(
     reason as the buildings; their ids stay the same, so Terria keeps them loaded across water changes.
     """
     catalog, workbench, timeline = [], [], []
+
+    # Present rainfall — provisional live observation test
+    # Add only for live/manual water-level views, not historical replay.
+    if czml_query is not None and "pfaffenthal_cm" in czml_query:
+        rainfall_id = "alzette-present-rainfall-test"
+
+        catalog.append({
+            "id": rainfall_id,
+            "type": "wms",
+            "name": "Present rainfall (test)",
+            "url": "http://localhost:8088/geoserver/wms",
+            "layers": "input_layers:precip_live_test",
+            "show": True,
+            "opacity": 0.65,
+        })
+
+        workbench.append(rainfall_id)
+
     query_id = ""
     if czml_query is not None:
         query = "&".join(f"{key}={value}" for key, value in sorted(czml_query.items()))

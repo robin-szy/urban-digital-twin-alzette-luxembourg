@@ -1285,6 +1285,10 @@
         ui.pf.value = data.pfaffenthal_cm;
         ui.he.value = data.hesperange_cm;
         ui.li.value = data.livange_cm === null ? "" : data.livange_cm;
+        if (!currentView &&
+            !window.location.hash.includes("/terria-water-init/")) {
+          return;
+        }
         if (scenario) {
           // The scenario stays on screen; unticking it returns to this level.
           baseLevel = liveLevel;
