@@ -136,7 +136,7 @@ def test_main_merges_into_master_and_new_resets_it(tmp_path: pathlib.Path, monke
     calls = run_main(tmp_path, monkeypatch, str(b))
     _, bounds = read(prepare_dem.MASTER_DEM)
     assert (bounds.left, bounds.right) == (77000, 77030)
-    assert len(calls) == 1 and calls[0][-2:] == ["--volume", prepare_dem.DEFAULT_VOLUME]
+    assert calls == [["bash", prepare_dem.BUILD_LIDAR_TERRAIN.as_posix(), "--force"]]
     sources = json.loads(prepare_dem.sources_file(prepare_dem.MASTER_DEM).read_text(encoding="utf-8"))
     assert sources == [str(b.resolve()), str(a.resolve())]
 
@@ -153,7 +153,7 @@ def test_main_merges_into_master_and_new_resets_it(tmp_path: pathlib.Path, monke
 
 
 def test_master_is_untouched_when_tiling_fails(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """If build_terrain.sh fails, the master DEM still describes the tiles that are actually served."""
+    """If build_lidar_terrain.sh fails, the master DEM still describes the tiles that are actually served."""
     a = write_dem(tmp_path / "a.tif", 77000, 70010, np.full((10, 10), 1.0))
     run_main(tmp_path, monkeypatch, str(a))
     before = prepare_dem.MASTER_DEM.read_bytes()
@@ -166,3 +166,37 @@ def test_master_is_untouched_when_tiling_fails(tmp_path: pathlib.Path, monkeypat
     with pytest.raises(prepare_dem.subprocess.CalledProcessError):
         prepare_dem.main([str(b)])
     assert prepare_dem.MASTER_DEM.read_bytes() == before
+
+
+def test_legacy_tiles_use_build_terrain(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--legacy-tiles builds the earlier tiles (build_terrain.sh with the volume) and still saves the master."""
+    a = write_dem(tmp_path / "a.tif", 77000, 70010, np.full((10, 10), 1.0))
+    calls = run_main(tmp_path, monkeypatch, str(a), "--legacy-tiles", "--volume", "my_volume")
+    assert len(calls) == 1 and calls[0][1] == prepare_dem.BUILD_TERRAIN.as_posix()
+    assert calls[0][-2:] == ["--volume", "my_volume"]
+    assert prepare_dem.MASTER_DEM.is_file()
+
+
+def test_no_tiles_saves_master_and_records_source(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--no-tiles only writes the master DEM; --record-as is the source written to the sidecar."""
+    a = write_dem(tmp_path / "a.tif", 77000, 70010, np.full((10, 10), 1.0))
+    calls = run_main(tmp_path, monkeypatch, str(a), "--no-tiles", "--record-as", "C:/data/raw/a.tif")
+    assert calls == []
+    assert prepare_dem.MASTER_DEM.is_file()
+    sources = json.loads(prepare_dem.sources_file(prepare_dem.MASTER_DEM).read_text(encoding="utf-8"))
+    assert sources == ["C:/data/raw/a.tif"]
+
+
+def test_first_master_is_removed_when_tiling_fails(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without an earlier master, a failed tiling leaves no master DEM behind."""
+    monkeypatch.setattr(prepare_dem, "MASTER_DEM", tmp_path / "master" / "dem_merged.tif")
+    monkeypatch.setattr(prepare_dem, "find_bash", lambda: "bash")
+
+    def fail(command: list, check: bool) -> None:
+        raise prepare_dem.subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(prepare_dem.subprocess, "run", fail)
+    a = write_dem(tmp_path / "a.tif", 77000, 70010, np.full((10, 10), 1.0))
+    with pytest.raises(prepare_dem.subprocess.CalledProcessError):
+        prepare_dem.main([str(a)])
+    assert not prepare_dem.MASTER_DEM.exists()

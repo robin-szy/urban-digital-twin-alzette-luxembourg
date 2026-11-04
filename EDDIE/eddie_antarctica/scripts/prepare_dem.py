@@ -1,27 +1,39 @@
 """
 Merge DEM GeoTIFFs into the terrain's master DEM, then rebuild the Cesium terrain from it.
 
-Usage: python scripts/prepare_dem.py <dem.tif> [<dem.tif> ...] [--new] [--height-offset METRES]
-                                     [--resolution METRES] [--volume NAME]
+Usage: python scripts/prepare_dem.py <dem.tif> [<dem.tif> ...] [--new] [--resolution METRES]
+                                     [--no-tiles | --legacy-tiles [--height-offset METRES] [--volume NAME]]
+
+scripts/setup_terrain.sh runs this in Docker (no local Python packages needed) together with every
+other step of a fresh setup.
 
   dem.tif          One or more DEMs. Where they overlap, later files win over earlier ones,
                    and all of them win over what is already in the master DEM.
   --new            Discard the master DEM and build the terrain from only these files.
-  --height-offset  Added to every height, e.g. ~47.5 to turn Luxembourg NG-L heights into
-                   ellipsoid heights so terrain lines up with other 3D data. Default 0.
   --resolution     Pixel size of the merged DEM, in the master's CRS units (metres for LUREF).
                    Defaults to the finest input. The whole mosaic is held in memory, so use e.g. 5
                    for a country-wide lidar DEM (0.5 m pixels would need ~140 GB of RAM).
-  --volume         Docker volume mounted at /stored_data (passed to build_terrain.sh).
+  --no-tiles       Only save the master DEM and home camera; build the 3D tiles afterwards with
+                   scripts/build_lidar_terrain.sh.
+  --legacy-tiles   Build the earlier terrain tiles instead (scripts/build_terrain.sh: a fixed height
+                   offset, no geoid, into the stored_data Docker volume), which the map no longer shows.
+  --height-offset  Legacy tiles only: added to every height. Default 0.
+  --volume         Legacy tiles only: Docker volume mounted at /stored_data (passed to build_terrain.sh).
+  --record-as      Path recorded as the source in dem_merged.sources.json instead of the (single)
+                   input's own path, e.g. the host path when this runs in Docker.
 
 Steps:
   1. Merge the inputs (and the existing master, unless --new) into one raster in the master's CRS,
      covering the union of all extents. Pixels no input covers are NaN.
-  2. Reproject the merged DEM to EPSG:4326, apply the height offset and fill the NaN gaps with
-     the lowest real height: ctb-tile reads no-data as real heights, so gaps would become pits.
-  3. Tile it with scripts/build_terrain.sh (Docker).
-  4. Only if that succeeded: save the merged DEM as the new master and point the TerriaJS home
-     camera (terriajs/catalog.json) at the terrain's extent.
+  2. Save it as the master DEM (data/terrain/dem_merged.tif), the DEM the backend reads.
+  3. Build the 3D terrain tiles the map shows from it with scripts/build_lidar_terrain.sh (Docker;
+     ellipsoid heights with the EGM2008 geoid, into data/terrain/lidar_egm2008/). If that fails,
+     the previous master DEM is put back, so it always describes the tiles that are served.
+     With --legacy-tiles instead: reproject to EPSG:4326, apply the height offset, fill the NaN
+     gaps with the lowest real height (ctb-tile reads no-data as real heights) and tile it with
+     scripts/build_terrain.sh, then save the master.
+  4. Record the sources and point the TerriaJS home camera (terriajs/catalog.json) at the terrain's
+     extent.
 
 The master DEM (data/terrain/dem_merged.tif) keeps the original heights, NaN gaps included, so the
 offset and gap fill are re-applied from clean data on every run.
@@ -47,6 +59,7 @@ PROJECT_DIR = pathlib.Path(__file__).resolve().parent.parent
 MASTER_DEM = PROJECT_DIR / "data" / "terrain" / "dem_merged.tif"
 CATALOG = PROJECT_DIR / "terriajs" / "catalog.json"
 BUILD_TERRAIN = PROJECT_DIR / "scripts" / "build_terrain.sh"
+BUILD_LIDAR_TERRAIN = PROJECT_DIR / "scripts" / "build_lidar_terrain.sh"
 DEFAULT_VOLUME = "eddie_antarctica_antarctic_stored_data"
 
 GEOTIFF_PROFILE = {"driver": "GTiff", "dtype": "float32", "count": 1, "nodata": np.nan,
@@ -150,6 +163,9 @@ def set_home_camera(dem: pathlib.Path, catalog: pathlib.Path) -> dict:
         west, south, east, north = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
     camera = {"west": round(west, 6), "south": round(south, 6), "east": round(east, 6), "north": round(north, 6)}
     content = json.loads(catalog.read_text(encoding="utf-8"))
+    if content.get("homeCamera") == camera:
+        # Unchanged: leave the file (and its line endings) as it is.
+        return camera
     content["homeCamera"] = camera
     catalog.write_text(json.dumps(content, indent=2) + "\n", encoding="utf-8")
     return camera
@@ -174,7 +190,13 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--height-offset", type=float, default=0.0)
     parser.add_argument("--resolution", type=float)
     parser.add_argument("--volume", default=DEFAULT_VOLUME)
+    tiles = parser.add_mutually_exclusive_group()
+    tiles.add_argument("--no-tiles", action="store_true", help="only save the master DEM")
+    tiles.add_argument("--legacy-tiles", action="store_true", help="build the earlier tiles (build_terrain.sh)")
+    parser.add_argument("--record-as", help="source path recorded in dem_merged.sources.json")
     args = parser.parse_args(argv)
+    if args.record_as and len(args.dems) != 1:
+        parser.error("--record-as needs exactly one DEM")
 
     for dem in args.dems:
         if not dem.is_file():
@@ -187,25 +209,46 @@ def main(argv: List[str] | None = None) -> None:
 
     with tempfile.TemporaryDirectory() as work_dir:
         merged = pathlib.Path(work_dir) / "dem_merged.tif"
-        terrain_input = pathlib.Path(work_dir) / "dem_4326.tif"
         print(f"==> Merging {len(new_files)} file(s)" + (f" into {existing}" if existing else " (new terrain)"))
         merge_dems(new_files, merged, existing, args.resolution)
-        print("==> Reprojecting to EPSG:4326 and filling gaps")
-        to_terrain_input(merged, terrain_input, args.height_offset)
-        print("==> Tiling")
-        subprocess.run([find_bash(), BUILD_TERRAIN.as_posix(), terrain_input.as_posix(), "--volume", args.volume],
-                       check=True)
         MASTER_DEM.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(merged, MASTER_DEM)
+        if args.legacy_tiles:
+            terrain_input = pathlib.Path(work_dir) / "dem_4326.tif"
+            print("==> Reprojecting to EPSG:4326 and filling gaps")
+            to_terrain_input(merged, terrain_input, args.height_offset)
+            print("==> Tiling (legacy terrain)")
+            subprocess.run([find_bash(), BUILD_TERRAIN.as_posix(), terrain_input.as_posix(), "--volume", args.volume],
+                           check=True)
+            shutil.move(merged, MASTER_DEM)
+        else:
+            # build_lidar_terrain.sh reads the master DEM: put the new one in place, and the previous
+            # one back if tiling fails.
+            backup = pathlib.Path(work_dir) / "previous_master.tif"
+            if MASTER_DEM.is_file():
+                shutil.copy2(MASTER_DEM, backup)
+            shutil.move(merged, MASTER_DEM)
+            if not args.no_tiles:
+                print("==> Tiling (3D terrain with the EGM2008 geoid)")
+                try:
+                    subprocess.run([find_bash(), BUILD_LIDAR_TERRAIN.as_posix(), "--force"], check=True)
+                except (subprocess.CalledProcessError, OSError):
+                    if backup.is_file():
+                        shutil.move(backup, MASTER_DEM)
+                    else:
+                        MASTER_DEM.unlink()
+                    raise
 
     # Newest first, matching precedence.
-    sources = [str(path) for path in reversed(new_files)] + previous_sources
+    recorded = [pathlib.Path(args.record_as)] if args.record_as else new_files
+    sources = [str(path) for path in reversed(recorded)] + previous_sources
     sources_file(MASTER_DEM).write_text(json.dumps(sources, indent=2) + "\n", encoding="utf-8")
     camera = set_home_camera(MASTER_DEM, CATALOG)
     print(f"==> Master DEM saved to {MASTER_DEM}")
     print(f"==> Home camera set to {camera} in {CATALOG}")
     print("    Rebuild the map to pick it up: docker compose up -d --build terria_map "
           "(with docker-compose-dev.yml a hard refresh is enough)")
+    if args.no_tiles:
+        print("    Build the 3D terrain tiles next: bash scripts/build_lidar_terrain.sh --force")
 
 
 if __name__ == "__main__":
