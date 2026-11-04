@@ -72,7 +72,7 @@ def create_vector_layer_catalog_item(
                 "Alzette km 35–50 AOI."
             ),
             "url": f"{workspace_url}/wms",
-            "layers": layer_name,
+            "layers": "precipitation_interpolated_history",
             "fromContinuous": "nearest",
             "showInChartPanel": True,
             "disableDateTimeSelector": False,

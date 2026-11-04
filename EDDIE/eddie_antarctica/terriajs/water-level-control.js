@@ -165,6 +165,13 @@
           "Latest reading " + data.datetime.replace("T", " ").slice(0, 16) +
           ": Pfaffenthal " + data.pfaffenthal_cm + ", Hesperange " + data.hesperange_cm +
           (data.livange_cm === null ? "" : ", Livange " + data.livange_cm) + " cm";
+	// When the user is viewing historical data,
+	// live gauge updates must not replace the map.
+
+	if (window.location.hash.includes("/terria-date-init/")) {
+	  setMode("HISTORICAL");
+	  return;
+	}
         if (!live || !changed) {
           return;
         }

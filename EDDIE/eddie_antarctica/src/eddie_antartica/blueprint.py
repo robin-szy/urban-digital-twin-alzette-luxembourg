@@ -14,7 +14,7 @@ from eddie_precip_interpolation.tasks import (
     derive_precipitation_history,
 )
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from celery import chain
 from flask import jsonify, request
@@ -341,13 +341,22 @@ def load_digital_twin_date():
             }
         ), 400
 
-    start_iso = (
-        f"{requested_date}T00:00:00Z"
-    )
+    # The user selects a Luxembourg calendar date.
+    lux_tz = ZoneInfo("Europe/Luxembourg")
+
+
+    local_start = datetime.strptime(
+        requested_date, "%Y-%m-%d"
+    ).replace(tzinfo=lux_tz)
+    local_end = local_start + timedelta(days=1)
+    # Convert the complete local day to UTC.
+    start_iso = local_start.astimezone(
+        timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     end_iso = (
-        f"{requested_date}T23:59:59Z"
-    )
+        local_end.astimezone(timezone.utc) - timedelta(seconds=1)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # --------------------------------------------------------
     # PRECIPITATION
@@ -501,6 +510,14 @@ def terria_date_init(
         timezone.utc
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Restrict historical playback to the selected
+    # Luxembourg calendar day.
+    next_local_midnight = local_midnight + timedelta(days=1)
+
+    stop_time = (
+        next_local_midnight.astimezone(timezone.utc) - timedelta(seconds=1)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     precipitation_available = (
         precip_available == "1"
     )
@@ -510,7 +527,11 @@ def terria_date_init(
     )
 
     return jsonify(
-        {
+        {"workbench": [
+		"precipitation-through-time",
+		"water-level-through-time",
+		"interpolated-water-level-through-time",
+	        ],
             "catalog": [
                 {
                     "type": "group",
@@ -525,6 +546,9 @@ def terria_date_init(
                                     "type": "wms",
                                     "name": "Precipitation through time",
                                     "currentTime": current_time,
+                                    "startTime": current_time,
+                                    "stopTime": stop_time,
+                                    "isPaused": True,
                                     "show": precipitation_available,
                                 },
                                 {
@@ -532,6 +556,9 @@ def terria_date_init(
                                     "type": "wms",
                                     "name": "Water level through time",
                                     "currentTime": current_time,
+                                    "startTime": current_time,
+                                    "stopTime": stop_time,
+                                    "isPaused": True,
                                     "show": water_level_available,
                                 },
                                 {
@@ -545,6 +572,9 @@ def terria_date_init(
                                         "through time"
                                     ),
                                     "currentTime": current_time,
+                                    "startTime": current_time,
+                                    "stopTime": stop_time,
+                                    "isPaused": True,
                                     "show": water_level_available,
                                 },
                             ],
