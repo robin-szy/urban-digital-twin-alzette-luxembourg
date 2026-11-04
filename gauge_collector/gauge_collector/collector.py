@@ -14,6 +14,7 @@ them (the API's local-time stamps, labelled UTC), so rows from both writers matc
 and the period filters line up with the API's own.
 """
 
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,20 @@ API_ROOT = os.environ.get("GAUGE_API_ROOT", "https://heichwaasser.lu/api/v1")
 RIVER_IDS = [int(value) for value in os.environ.get("GAUGE_RIVER_IDS", "17,23,13,15,9").split(",") if value.strip()]
 
 HISTORY_TABLE = "water_level_history"
+
+# One row per job: the time of the last successful collection (see refresh_if_stale).
+STATUS_TABLE = "gauge_collection_status"
+STATUS_JOB = "heichwaasser"
+
+# When the gauge API / collector is used and the last successful collection is older than this
+# (or unknown), everything the source keeps since then is fetched first.
+REFRESH_AFTER = timedelta(days=int(os.environ.get("GAUGE_REFRESH_AFTER_DAYS", "7")))
+
+# How far back the source keeps readings, if it ever stops keeping the full history
+# (GAUGE_SOURCE_HISTORY_DAYS); unset: everything since HISTORY_START.
+SOURCE_HISTORY_DAYS = os.environ.get("GAUGE_SOURCE_HISTORY_DAYS")
+
+logger = logging.getLogger(__name__)
 
 # First reading the source keeps.
 HISTORY_START = datetime(2017, 12, 14, tzinfo=timezone.utc)
@@ -94,6 +109,45 @@ def ensure_table(conn) -> None:
         f"CREATE INDEX IF NOT EXISTS idx_{HISTORY_TABLE}_datetime ON {HISTORY_TABLE} (datetime)"
     ))
     conn.commit()
+
+
+def ensure_status_table(conn) -> None:
+    """Table holding the time of the last successful collection, if it does not exist yet."""
+    conn.execute(text(
+        f"""
+        CREATE TABLE IF NOT EXISTS {STATUS_TABLE} (
+            job TEXT PRIMARY KEY,
+            last_success TIMESTAMPTZ NOT NULL
+        )
+        """
+    ))
+    conn.commit()
+
+
+def last_success(conn):
+    """Time of the last successful collection, or None when never recorded."""
+    ensure_status_table(conn)
+    return conn.execute(
+        text(f"SELECT last_success FROM {STATUS_TABLE} WHERE job = :job"), {"job": STATUS_JOB}
+    ).scalar_one_or_none()
+
+
+def _record_success(engine, when: datetime) -> None:
+    with engine.connect() as conn:
+        ensure_status_table(conn)
+        conn.execute(text(
+            f"""
+            INSERT INTO {STATUS_TABLE} (job, last_success) VALUES (:job, :when)
+            ON CONFLICT (job) DO UPDATE SET last_success = GREATEST({STATUS_TABLE}.last_success, EXCLUDED.last_success)
+            """
+        ), {"job": STATUS_JOB, "when": when})
+        conn.commit()
+
+
+def _succeeded(report: dict) -> bool:
+    """A run succeeded when it reached the API for every station without an error."""
+    stations = report.get("stations", [])
+    return bool(stations) and not any(item.get("error") or item.get("errors") for item in stations)
 
 
 def _last_stored(conn, station_id: int, before: datetime | None = None):
@@ -279,6 +333,8 @@ def collect(engine=None, now: datetime | None = None) -> dict:
                 report["stations"].append({"station_id": station["id"], "station": station["city"], "error": str(exc)})
     report["inserted"] = sum(item.get("inserted", 0) for item in report["stations"])
     report["finished"] = datetime.now(timezone.utc).isoformat()
+    if _succeeded(report):
+        _record_success(engine, now)
     return report
 
 
@@ -288,6 +344,9 @@ def backfill(start: datetime | None = None, end: datetime | None = None, engine=
     (HISTORY_START to now). Already stored readings are skipped, so it can be re-run or resumed.
     """
     engine = engine or get_engine()
+    # Only a backfill up to now counts as a collection of the latest data.
+    up_to_now = end is None
+    started = datetime.now(timezone.utc)
     start = start or HISTORY_START
     end = end or datetime.now(timezone.utc) + END_MARGIN
     report = {"mode": "backfill", "start": start.isoformat(), "end": end.isoformat(), "stations": []}
@@ -312,6 +371,69 @@ def backfill(start: datetime | None = None, end: datetime | None = None, engine=
                 "fetched": fetched, "inserted": inserted, "errors": errors,
             })
     report["inserted"] = sum(item["inserted"] for item in report["stations"])
+    if up_to_now and _succeeded(report):
+        _record_success(engine, started)
+    return report
+
+
+def refresh_due(engine=None, now: datetime | None = None) -> bool:
+    """True when the last successful collection is missing or older than REFRESH_AFTER."""
+    engine = engine or get_engine()
+    now = now or datetime.now(timezone.utc)
+    with engine.connect() as conn:
+        last = last_success(conn)
+    return last is None or now - last > REFRESH_AFTER
+
+
+def refresh_if_stale(engine=None, now: datetime | None = None) -> dict | None:
+    """
+    Weekly refresh, run whenever the gauge API or collector is used.
+
+    When the last successful collection (STATUS_TABLE) is missing or older than REFRESH_AFTER,
+    load everything the source keeps since then with backfill (duplicates are skipped; without
+    a recorded date, the whole history). backfill records the new date only if every station
+    succeeded, so a failed refresh is tried again on the next use.
+
+    Returns
+    -------
+    dict | None
+        The backfill report, or None when no refresh was due.
+    """
+    engine = engine or get_engine()
+    now = now or datetime.now(timezone.utc)
+    with engine.connect() as conn:
+        last = last_success(conn)
+    if last is not None and now - last <= REFRESH_AFTER:
+        return None
+
+    oldest = HISTORY_START
+    if SOURCE_HISTORY_DAYS:
+        oldest = max(oldest, now - timedelta(days=float(SOURCE_HISTORY_DAYS)))
+    start = last - OVERLAP if last is not None else HISTORY_START
+    if start < oldest:
+        if last is not None:
+            logger.warning(
+                "Gauge data: the last successful collection was %s, but the source only keeps readings "
+                "since %s: the readings from %s to %s could not be recovered.",
+                last.isoformat(), oldest.isoformat(), last.date(), oldest.date(),
+            )
+        start = oldest
+
+    logger.warning(
+        "Gauge data: last successful collection %s; refreshing everything the source keeps since %s.",
+        last.isoformat() if last is not None else "never recorded", start.date(),
+    )
+    report = backfill(start, None, engine)
+    report["mode"] = "refresh"
+    if _succeeded(report):
+        print(f"[refresh] {report['inserted']} new readings since {start.date()}", flush=True)
+    else:
+        failed = [item for item in report["stations"] if item.get("errors")]
+        logger.warning(
+            "Gauge data refresh failed; the last collection date was not updated and the refresh "
+            "runs again on the next use. Failed: %s",
+            failed or "no station listed by the API",
+        )
     return report
 
 

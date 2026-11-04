@@ -10,6 +10,8 @@ services:
       - ../../eddie_buildings/eddie_buildings:/venv/lib/python3.11/site-packages/eddie_buildings:ro
       - ../../data/raw/Buildings:/app/data/buildings:ro
       - ./data/terrain:/app/data/terrain:ro
+      # Relative Elevation Model cache (eddie_water_level.rem), built once from the DEM; writable
+      - ./data/rem:/app/data/rem
       - ../../data/raw/Flood_hazard:/app/data/flood_hazard:ro
       - ../../data/raw/Communes:/app/data/communes:ro
     environment:
@@ -17,8 +19,38 @@ services:
       - RIVER_KILOMETRAGE_GPKG=/app/data/river_kilometers/kilometrage-des-cours-deau.gpkg
       # Must equal the --height-offset given to scripts/prepare_dem.py
       - TERRAIN_HEIGHT_OFFSET=${TERRAIN_HEIGHT_OFFSET:-0}
+      # Metres the water drawn from gauge levels is raised (water_surface.py)
+      - WATER_RENDER_OFFSET=${WATER_RENDER_OFFSET:-0}
+      # Minimum metres of water above the displayed terrain, inside the river channel only (grid method only)
+      - CHANNEL_MARGIN=${CHANNEL_MARGIN:-0.05}
+      # Gauge-stage step (cm) of the precomputed water levels (flood_grid.py)
+      - WATER_LEVEL_STEP_CM=${WATER_LEVEL_STEP_CM:-10}
+      # Cell size (m) of the drawn water mesh; 1 removes the <= 1 m channel-edge fringe, at 4x the data
+      - WATER_MESH_M=${WATER_MESH_M:-2}
+      # Velocity estimate: Manning roughness and slope smoothing distance (m)
+      - MANNING_N=${MANNING_N:-0.035}
+      - SLOPE_SMOOTHING_M=${SLOPE_SMOOTHING_M:-300}
+      # Brown shading of steep terrain: starts at / full colour from (degrees)
+      - SLOPE_SHADING_START_DEG=${SLOPE_SHADING_START_DEG:-25}
+      - SLOPE_SHADING_FULL_DEG=${SLOPE_SHADING_FULL_DEG:-60}
+      # OpenStreetMap extract: river channel and place names
+      - OSM_GPKG=/app/data/buildings/luxembourg.gpkg
       - BUILDINGS_GPKG=/app/data/buildings/ACT2023v2_Buildings3d_Footprints.gpkg
       - TERRAIN_DEM=/app/data/terrain/dem_merged.tif
+      # 3D terrain: the LiDAR DEM with ellipsoid heights (NG95 + EGM2008), built once by
+      # scripts/build_lidar_terrain.sh; the geoid grid it used places water and buildings on it
+      - TERRAIN_DATA_DIR=/app/data/terrain/lidar_egm2008/terrain
+      - TERRAIN_GEOID_GRID=/app/data/terrain/lidar_egm2008/geoid_egm2008.tif
+      # Water surface: "sections" (tilted sections along the river) or "grid" (the earlier grid surface)
+      - WATER_SURFACE_METHOD=${WATER_SURFACE_METHOD:-sections}
+      # Half-width (m) of the band the water sections cover; 700 holds the HQextreme extent
+      - SECTION_CORRIDOR_M=${SECTION_CORRIDOR_M:-700}
+      # Water of gauge levels (live, replay, manual): "rem" (Relative Elevation Model) or "sections"
+      # (WATER_SURFACE_METHOD, the tilted sections); the flood scenarios always use WATER_SURFACE_METHOD
+      - LIVE_WATER_METHOD=${LIVE_WATER_METHOD:-rem}
+      - REM_CACHE_DIR=/app/data/rem
+      # Smallest water rise (m) above the REM base surface, so the channel stays filled at low stages
+      - REM_MIN_RISE_M=${REM_MIN_RISE_M:-0.15}
       # Height in metres given to the 3D buildings without height data
       - BUILDING_HEIGHT_M=${BUILDING_HEIGHT_M:-10}
 

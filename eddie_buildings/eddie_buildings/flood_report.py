@@ -2,7 +2,10 @@
 """
 Flood scenario report: flooded area and affected buildings, in total and per municipality.
 
-The flooded area is the official HQ10 / HQ100 extent (AGE flood hazard maps)
+The flooded area is the scenario's water extent drawn on the map
+(eddie_water_level.flood_grid.water_extent: over the LiDAR DEM, the ground lower than the scenario's
+water surface, flood_sections by default; beyond the DEM, the official HQ10 / HQ100 / HQextreme extent
+of the AGE flood hazard maps)
 inside the study area of the 3D buildings (buildings_3d.study_area). A building
 is affected when its footprint touches that extent.
 """
@@ -17,7 +20,8 @@ import geopandas as gpd
 import pandas as pd
 
 from eddie_buildings.buildings_3d import FLOOD_FULL, FLOOD_TOUCHED, building_footprints, study_area
-from eddie_water_level.water_surface import SCENARIOS, flood_extent
+from eddie_water_level.flood_grid import water_extent
+from eddie_water_level.water_surface import SCENARIOS
 
 
 # data.public.lu "Limites administratives du Grand-Duché de Luxembourg", communes4326.geojson.
@@ -66,7 +70,7 @@ def scenario_report(scenario: str) -> dict:
     Parameters
     ----------
     scenario : str
-        "hq10" or "hq100".
+        "hq10", "hq100" or "hqextreme".
 
     Returns
     -------
@@ -78,7 +82,7 @@ def scenario_report(scenario: str) -> dict:
     if scenario not in SCENARIOS:
         raise ValueError(f"Unknown flood scenario {scenario!r}; use one of {', '.join(SCENARIOS)}.")
 
-    extent = flood_extent(scenario).intersection(study_area())
+    extent = water_extent(scenario).intersection(study_area())
     buildings = building_footprints().to_crs(2169)
     status = buildings[f"flooded_{scenario}"]
     # Touched or fully inside the extent (None means no flood map).
@@ -190,12 +194,16 @@ def report_html(report: dict, csv_url: str, generated: str) -> str:
 <h2>By municipality</h2>
 {per_municipality}
 <div class="notes">
-  <p>Flooded area: official {name} extent of the flood hazard maps 2021 (Administration de la gestion de l'eau),
-  inside the study area of the digital twin (500 m around the Alzette km 35–50 and its tributaries,
-  widened to the HQ100 extent up to 1 km from the river).</p>
+  <p>Flooded area: the {name} water extent shown in the digital twin. Where the LiDAR terrain model covers
+  the valley, it is the ground lower than the {name} water surface (whose level along the river comes from the
+  {name} extent of the flood hazard maps 2021, Administration de la gestion de l'eau), so islands and raised
+  ground stay dry; low ground behind embankments counts too. Beyond the terrain model it is the official extent.
+  Counted inside the study area
+  of the digital twin (500 m around the Alzette km 35–50 and its tributaries, widened to the HQ100 extent up to
+  1 km from the river).</p>
   <p>Buildings: ACT national building footprints 2023. A building is affected when its footprint touches the
-  flooded area, and counts in the municipality that holds its centre. Touched (orange): the footprint touches or
-  partly overlaps the flooded area. Fully flooded (red): the footprint lies entirely inside it.</p>
+  flooded area, and counts in the municipality that holds its centre. Touched (orange): the ground under part of the
+  footprint is below the water surface. Fully flooded (red): the ground under the whole footprint is below it.</p>
 </div>
 </body>
 </html>

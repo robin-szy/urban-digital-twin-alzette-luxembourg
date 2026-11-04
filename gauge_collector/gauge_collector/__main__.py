@@ -33,6 +33,10 @@ def main() -> None:
     serve.add_argument("--port", type=int, default=5002)
     args = parser.parse_args()
 
+    if args.command in ("collect", "status"):
+        # Weekly refresh first (the server checks on each request instead).
+        collector.refresh_if_stale()
+
     if args.command == "collect":
         result = collector.collect()
     elif args.command == "backfill":

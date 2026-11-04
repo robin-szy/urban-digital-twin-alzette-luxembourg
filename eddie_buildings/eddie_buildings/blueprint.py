@@ -28,7 +28,7 @@ def buildings_3d_czml():
     Water levels, the same arguments as /water-surface.czml (stage_cm, pfaffenthal_cm,
     hesperange_cm, livange_cm, date, start / end, transition_s): buildings turn orange where
     the water touches their footprint and red where it covers it, following the levels over time.
-    scenario  hq10 or hq100: the same colours against that official flood extent.
+    scenario  hq10, hq100 or hqextreme: the same colours against that official flood extent.
     """
     # pylint: disable=import-outside-toplevel
     from eddie_buildings import buildings_3d
@@ -40,7 +40,7 @@ def buildings_3d_czml():
         levels = None
         if "scenario" in args:
             if args["scenario"] not in buildings_3d.SCENARIOS:
-                raise ValueError(f"Unknown flood scenario {args['scenario']!r}; use hq10 or hq100.")
+                raise ValueError(f"Unknown flood scenario {args['scenario']!r}; use hq10, hq100 or hqextreme.")
             levels = {"times": [datetime.now(timezone.utc)], "wse": {}, "keyframe_scenarios": [args["scenario"]]}
         elif any(key in args for key in ("stage_cm", "pfaffenthal_cm", "date", "start")):
             levels = water_levels(args)
@@ -56,12 +56,33 @@ def buildings_3d_czml():
 
 
 @blueprint.route(
+    "/place-names/<kind>.czml",
+    methods=["GET"],
+)
+def place_names_czml(kind):
+    """
+    Place names in the river corridor as small 3D points, as CZML: /place-names/streets.czml
+    (one point per street) or /place-names/other.czml (rivers, places, landmarks).
+    """
+    # pylint: disable=import-outside-toplevel
+    from eddie_buildings import place_names
+
+    try:
+        return jsonify(place_names.build_czml(kind))
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), BAD_REQUEST
+    except FileNotFoundError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), NOT_FOUND
+
+
+@blueprint.route(
     "/flood-report/<scenario>.<extension>",
     methods=["GET"],
 )
 def flood_report(scenario, extension):
     """
-    Report of a flood scenario: /flood-report/hq100.html (printable page), .csv or .json.
+    Report of a flood scenario: /flood-report/hq100.html (printable page), .csv or .json
+    (hq10, hq100 or hqextreme).
 
     Total flooded area, affected buildings and their footprint area, in total and per municipality.
     """

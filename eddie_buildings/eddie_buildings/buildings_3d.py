@@ -16,14 +16,16 @@ Building footprints (ACT 2023 national buildings, or OpenStreetMap)
        properties (shown by Terria when a building is clicked).
 
 Flood status, tested in 2D on the footprint base: orange when the footprint
-touches or partly overlaps the water, red when it lies fully in it. For the
-HQ10 / HQ100 scenarios the water is the official flood extent (exact polygons);
-for gauge levels (live, manual, day replay) it is the water surface where it is
-above the terrain, tested at points along the footprint edge and inside it
-(FLOOD_SAMPLE_STEP_M apart). The colours follow the water over time.
+touches or partly overlaps the water, red when it lies fully in it. The water is
+the extent drawn on the map (eddie_water_level.flood_grid): for gauge levels (live,
+manual, day replay) the water cells of the level shown, tested at points along the
+footprint edge and inside it (FLOOD_SAMPLE_STEP_M apart); for the HQ10 / HQ100 /
+HQextreme scenarios the scenario's water extent as polygons (flood_grid.water_extent:
+computed over the DEM, the official extent beyond it). The colours follow the water over time.
 
 Heights use the same vertical reference as the terrain and the water
-surface: the DEM height plus TERRAIN_HEIGHT_OFFSET.
+surface: the DEM height plus water_surface.terrain_height_offset (the geoid undulation the terrain
+tiles were built with, plus TERRAIN_HEIGHT_OFFSET).
 """
 
 import bisect
@@ -42,12 +44,11 @@ from shapely import vectorized
 from shapely.ops import transform
 from shapely.prepared import prep
 
+from eddie_water_level.flood_grid import dem_grid, wet_mask, water_extent
 from eddie_water_level.water_surface import (
-    DEFAULT_CORRIDOR_M,
     SCENARIOS,
     TERRAIN_DEM,
-    TERRAIN_HEIGHT_OFFSET_M,
-    flood_extent,
+    terrain_height_offset,
     water_cells,
 )
 
@@ -204,8 +205,8 @@ def building_footprints() -> gpd.GeoDataFrame:
     gpd.GeoDataFrame
         Every column of the footprint data, plus measured_height_m and height_source
         (None / "average" when no height data), ground_min_m, ground_mean_m,
-        flooded_hq10 and flooded_hq100 (FLOOD_NONE / FLOOD_TOUCHED / FLOOD_FULL against the
-        official extent, None without the flood map), and geometry (EPSG:4326 polygons).
+        flooded_hq10, flooded_hq100 and flooded_hqextreme (FLOOD_NONE / FLOOD_TOUCHED / FLOOD_FULL against the
+        scenario's water extent, flood_grid.water_extent; None without the flood map), and geometry (EPSG:4326 polygons).
     """
     for path, name in [(BUILDINGS_GPKG, "Building footprint GeoPackage"), (TERRAIN_DEM, "Terrain DEM")]:
         if not path.is_file():
@@ -241,7 +242,7 @@ def building_footprints() -> gpd.GeoDataFrame:
 
     for scenario in SCENARIOS:
         try:
-            buildings[f"flooded_{scenario}"] = _extent_status(buildings.geometry, flood_extent(scenario))
+            buildings[f"flooded_{scenario}"] = _extent_status(buildings.geometry, water_extent(scenario))
         except FileNotFoundError:
             buildings[f"flooded_{scenario}"] = None
 
@@ -295,9 +296,9 @@ def _flood_samples() -> tuple:
     Returns
     -------
     tuple
-        (owner, ground, cell, chainages): for each point, the row of building_footprints() it
-        belongs to, the terrain height under it, and the index in chainages of the water cell
-        holding it (-1 outside the water corridor, where the water never reaches).
+        (owner, cell): for each point, the row of building_footprints() it belongs to, and the
+        flat index of the flood_grid cell holding it (-1 outside the grid, where the water is
+        not computed).
     """
     buildings = building_footprints().to_crs(2169)
     drawn = buildings[buildings["ground_min_m"].notna()]
@@ -310,51 +311,35 @@ def _flood_samples() -> tuple:
     owner = np.concatenate(owner) if owner else np.zeros(0, dtype=int)
     xy = np.concatenate(points) if points else np.zeros((0, 2))
 
-    with rasterio.open(TERRAIN_DEM) as dem:
-        sample_xy = gpd.GeoSeries(gpd.points_from_xy(xy[:, 0], xy[:, 1]), crs=2169).to_crs(dem.crs)
-        rows, cols = rowcol(dem.transform, sample_xy.x.to_numpy(), sample_xy.y.to_numpy())
-        rows, cols = np.asarray(rows), np.asarray(cols)
-        valid = (rows >= 0) & (rows < dem.height) & (cols >= 0) & (cols < dem.width)
-        terrain = dem.read(1)
-        ground = np.full(len(xy), np.nan)
-        ground[valid] = terrain[rows[valid], cols[valid]]
-        del terrain
-        if dem.nodata is not None:
-            ground[ground == dem.nodata] = np.nan
-
-    cells = water_cells(DEFAULT_CORRIDOR_M).to_crs(2169)
-    chainages = np.sort(cells["chainage_m"].unique())
-    points_gdf = gpd.GeoDataFrame(geometry=gpd.points_from_xy(xy[:, 0], xy[:, 1]), crs=2169)
-    joined = gpd.sjoin(points_gdf, cells[["chainage_m", "geometry"]], how="left", predicate="within")
-    joined = joined[~joined.index.duplicated()]
-    cell = np.full(len(xy), -1)
-    found = joined["chainage_m"].notna().to_numpy()
-    cell[found] = np.searchsorted(chainages, joined["chainage_m"].to_numpy()[found].astype(int))
-    return owner, ground, cell, chainages
+    grid = dem_grid()
+    sample_xy = gpd.GeoSeries(gpd.points_from_xy(xy[:, 0], xy[:, 1]), crs=2169).to_crs(grid["crs"])
+    rows, cols = rowcol(grid["transform"], sample_xy.x.to_numpy(), sample_xy.y.to_numpy())
+    rows, cols = np.asarray(rows), np.asarray(cols)
+    valid = (rows >= 0) & (rows < grid["shape"][0]) & (cols >= 0) & (cols < grid["shape"][1])
+    cell = np.where(valid, rows * grid["shape"][1] + cols, -1)
+    return owner, cell
 
 
-def level_status(wse: dict) -> np.ndarray:
+def level_status(key) -> np.ndarray:
     """
     Flood status of every building for one water level.
 
-    A test point is under water when it lies in a water cell and its terrain is below that
-    cell's water level: the 2D flooded area the water surface shows.
+    A test point is under water when its grid cell holds water in the level drawn on the map
+    (flood_grid.wet_mask): the 2D flooded area the water surface shows.
 
     Parameters
     ----------
-    wse : dict
-        Water-surface elevation (NG-L) per chainage.
+    key
+        The water level (flood_grid.level_key).
 
     Returns
     -------
     np.ndarray
         FLOOD_NONE / FLOOD_TOUCHED / FLOOD_FULL per row of building_footprints().
     """
-    owner, ground, cell, chainages = _flood_samples()
+    owner, cell = _flood_samples()
     count = len(building_footprints())
-    levels = np.array([wse.get(int(chainage), np.nan) for chainage in chainages] + [np.nan])
-    with np.errstate(invalid="ignore"):
-        wet = ground < levels[cell]  # cell -1 picks the trailing NaN: never wet
+    wet = np.append(wet_mask(key).ravel(), False)[cell]  # cell -1 picks the trailing False: never wet
     points = np.bincount(owner, minlength=count)
     wet_points = np.bincount(owner, weights=wet, minlength=count)
     status = np.full(count, FLOOD_NONE)
@@ -402,8 +387,8 @@ def keyframe_status(levels: dict) -> np.ndarray:
     Parameters
     ----------
     levels : dict
-        times, wse (elevation per chainage, one per keyframe) and keyframe_scenarios
-        (scenario name or None per keyframe), as from eddie_water_level.blueprint.water_levels.
+        times, keyframe_scenarios (scenario name or None per keyframe) and keyframe_levels (the
+        level drawn at each keyframe), as from eddie_water_level.blueprint.water_levels.
 
     Returns
     -------
@@ -414,10 +399,10 @@ def keyframe_status(levels: dict) -> np.ndarray:
     statuses = []
     for index, scenario in enumerate(levels["keyframe_scenarios"]):
         if scenario is not None:
-            # The official extent, as in the flood report.
+            # The scenario's water extent, as in the flood report.
             statuses.append(buildings[f"flooded_{scenario}"].fillna(FLOOD_NONE).to_numpy(dtype=int))
         else:
-            statuses.append(level_status({chainage: values[index] for chainage, values in levels["wse"].items()}))
+            statuses.append(level_status(levels["keyframe_levels"][index]))
     return np.array(statuses)
 
 
@@ -499,6 +484,9 @@ def _static_packets(height_m: float) -> tuple:
         "geometry", "measured_height_m", "height_source", "ground_min_m", "ground_mean_m",
     ) and not column.startswith("flooded_")]
     footprint_area = buildings.to_crs(2169).geometry.area
+    # The terrain tiles hold ellipsoid heights (DEM + geoid): the buildings stand on them with the same offset.
+    centres = buildings.to_crs(2169).geometry.centroid
+    height_offset = pd.Series(terrain_height_offset(centres.x.to_numpy(), centres.y.to_numpy()), index=buildings.index)
 
     packets = []
     for index, building in buildings.iterrows():
@@ -519,8 +507,8 @@ def _static_packets(height_m: float) -> tuple:
         polygon = {
             "positions": {"cartographicDegrees": _degrees(building.geometry.exterior)},
             # The base sits at the lowest ground point so a building on a slope does not float.
-            "height": round(building["ground_min_m"] + TERRAIN_HEIGHT_OFFSET_M, 2),
-            "extrudedHeight": round(top + TERRAIN_HEIGHT_OFFSET_M, 2),
+            "height": round(building["ground_min_m"] + height_offset[index], 2),
+            "extrudedHeight": round(top + height_offset[index], 2),
             "outline": False,
         }
         if building.geometry.interiors:
@@ -534,6 +522,7 @@ def _static_packets(height_m: float) -> tuple:
             "footprint_area_m2": round(float(footprint_area[index]), 1),
             "HQ10": _flood_text(building["flooded_hq10"]),
             "HQ100": _flood_text(building["flooded_hq100"]),
+            "HQextreme": _flood_text(building["flooded_hqextreme"]),
         })
 
         packets.append((index, {

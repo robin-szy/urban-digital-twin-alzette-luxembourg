@@ -7,7 +7,22 @@
   },
   "catalog": [],
   "baseMaps": {
-    "defaultBaseMapId": "basemap-bing-aerial-with-labels",
-    "previewBaseMapId": "basemap-bing-aerial-with-labels"
+    "items": [
+      {
+        "item": {
+          "id": "basemap-geoportail-ortho-latest",
+          "name": "Orthophoto Luxembourg (latest, geoportail.lu)",
+          "type": "wmts",
+          "url": "https://wmts1.geoportail.lu/opendata/service",
+          "layer": "ortho_latest",
+          "attribution": "Orthophoto © Administration du cadastre et de la topographie (ACT), geoportail.lu, CC0",
+          "opacity": 1.0
+        },
+        "image": "build/TerriaJS/images/bing-aerial.png",
+        "contrastColor": "#ffffff"
+      }
+    ],
+    "defaultBaseMapId": "basemap-geoportail-ortho-latest",
+    "previewBaseMapId": "basemap-geoportail-ortho-latest"
   }
 }

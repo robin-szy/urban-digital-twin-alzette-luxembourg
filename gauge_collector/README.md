@@ -46,6 +46,19 @@ Without the service running, a one-off run also works:
 docker compose run --rm gauge_collector collect
 ```
 
+## Weekly refresh
+
+The time of the last successful collection is stored in the database
+(`gauge_collection_status`, row `heichwaasser`); every successful `collect`, and every
+`backfill` up to now, updates it. Whenever the collector is used (any HTTP request, each
+scheduled run, or the `collect` / `status` commands), that date is checked: when it is
+missing or older than 7 days (`GAUGE_REFRESH_AFTER_DAYS`), everything the source keeps since
+then is loaded with `backfill` (without a date: the whole history), skipping duplicates.
+The date is updated only if every station succeeded; otherwise a warning is logged and the
+refresh runs again on the next use. If the source keeps less history than the gap
+(`GAUGE_SOURCE_HISTORY_DAYS`, unset = full history since 2017-12-14), a warning names the
+days that could not be recovered.
+
 ## API
 
 | Method | Path        | What it does |
