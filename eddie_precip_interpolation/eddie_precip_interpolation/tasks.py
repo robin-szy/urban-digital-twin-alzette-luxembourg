@@ -433,3 +433,166 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
         "last_timestamp": timestamps.max().isoformat(),
         "layer": HISTORY_TABLE,
     }
+
+@app.task(
+    name="eddie_precip_interpolation.tasks.derive_live_precipitation"
+)
+def derive_live_precipitation(dry_run=False):
+    """Update the separate Present rainfall test layer from ASTA Live WFS."""
+    import json
+    from urllib.request import urlopen
+
+    import sqlalchemy as sa
+
+    url = (
+        "https://wms.inspire.geoportail.lu/geoserver/ml/wfs"
+        "?service=WFS&version=2.0.0&request=GetFeature"
+        "&typeNames=MF.PointTimeSeriesObservation_Live_ASTA_sum_nn050"
+        "&outputFormat=application/json&count=500"
+    )
+
+    station_ids = {
+        "AGM_013", "AGM_015", "AGM_019", "AGM_028", "AGM_038"
+    }
+
+    with urlopen(url, timeout=30) as response:
+        features = json.load(response).get("features", [])
+
+    rows = []
+
+    for feature in features:
+        p = feature.get("properties") or {}
+        station_id = str(
+            p.get("featureofinterest_xlink_href") or ""
+        ).split("/")[-1]
+
+        if station_id not in station_ids:
+            continue
+
+        raw_time = pd.to_datetime(
+            p.get("datetime"), utc=True, errors="coerce"
+        )
+        candidate_time = pd.to_datetime(
+            f"{p.get('day')}T{p.get('time')}",
+            utc=True,
+            errors="coerce",
+        )
+        value = pd.to_numeric(
+            p.get("sum_nn050"), errors="coerce"
+        )
+
+        if pd.isna(raw_time) or pd.isna(candidate_time):
+            continue
+        if pd.isna(value):
+            continue
+
+        # Temporary interpretation: ASTA's raw datetime is one
+        # hour ahead of the timestamp derived from day + time.
+        # Preserve both times until the source convention is confirmed.
+        if raw_time != candidate_time + pd.Timedelta(hours=1):
+            raise RuntimeError(
+                f"Unexpected timestamp difference for {station_id}: "
+                f"raw={raw_time}, candidate={candidate_time}"
+            )
+
+        rows.append({
+            "station_id": station_id,
+            "datetime": candidate_time,
+            "source_datetime": raw_time,
+            "value": float(value),
+        })
+
+    observations = pd.DataFrame(rows)
+
+    if observations.empty:
+        raise RuntimeError("No valid ASTA live observations found.")
+
+    observations = observations.drop_duplicates(
+        subset=["station_id", "datetime"], keep="last"
+    )
+
+    counts = observations.groupby("datetime")["station_id"].nunique()
+    usable = counts[counts >= IDW_CONFIG.min_stations]
+
+    if usable.empty:
+        raise RuntimeError(
+            "No synchronized timestamp has enough valid stations."
+        )
+
+    timestamp = usable.index.max()
+    current = observations[
+        observations["datetime"] == timestamp
+    ].copy()
+
+    engine = setup_environment.get_database()
+    target_table = "precip_live_test"
+
+    with engine.connect() as conn:
+        stored = conn.execute(
+            sa.text("SELECT MAX(datetime) FROM precip_live_test")
+        ).scalar()
+
+        if stored is not None:
+            previous = pd.to_datetime(stored, utc=True)
+            if timestamp <= previous:
+                return {
+                    "status": "skipped",
+                    "reason": "No newer observation",
+                    "latest_stored": previous.isoformat(),
+                }
+
+        stations_gdf = db.read_station_geometries(
+            conn, STATIONS_TABLE
+        )
+        aoi_gdf = db.read_aoi(conn, AOI_TABLE)
+
+        if aoi_gdf.empty:
+            raise RuntimeError("Alzette AOI is empty.")
+
+        result = idw_grid(
+            stations_gdf=stations_gdf,
+            observations_df=current,
+            aoi_gdf=aoi_gdf,
+            timestamp=timestamp,
+            config=IDW_CONFIG,
+        )
+
+        if result.empty:
+            raise RuntimeError("Interpolation returned no grid cells.")
+
+        report = {
+            "status": "dry_run" if dry_run else "updated",
+            "timestamp_provisional_utc": timestamp.isoformat(),
+            "source_datetime_utc": current[
+                "source_datetime"
+            ].iloc[0].isoformat(),
+            "stations_used": current["station_id"].nunique(),
+            "grid_cells": len(result),
+            "minimum_mm": float(result["precipitation_mm"].min()),
+            "maximum_mm": float(result["precipitation_mm"].max()),
+            "table": target_table,
+        }
+
+        if dry_run:
+            return report
+
+        db.replace_interpolated_latest(
+            conn, result, target_table
+        )
+
+        return report
+
+# ============================================================
+# AUTOMATIC PRESENT PRECIPITATION UPDATE
+# ============================================================
+
+from celery.schedules import crontab
+
+app.conf.beat_schedule.update({
+    "alzette-live-precipitation-every-15-minutes": {
+        "task": "eddie_precip_interpolation.tasks.derive_live_precipitation",
+        "schedule": crontab(minute="*/15"),
+        "kwargs": {"dry_run": False},
+        "options": {"expires": 600},
+    },
+})

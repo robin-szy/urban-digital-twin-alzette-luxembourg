@@ -20,8 +20,11 @@ GeoServer workspaces.
 from enum import StrEnum
 from typing import Any, Literal, TypeAlias
 
+import requests
+
 from eddie.config import EnvVariable
 from .database_layers import get_workspace_vector_layers
+from .geoserver_common import get_geoserver_url
 from .raster_layers import get_workspace_raster_layers
 
 
@@ -69,7 +72,7 @@ def create_vector_layer_catalog_item(
                 "Alzette km 35–50 AOI."
             ),
             "url": f"{workspace_url}/wms",
-            "layers": layer_name,
+            "layers": "precipitation_interpolated_history",
             "fromContinuous": "nearest",
             "showInChartPanel": True,
             "disableDateTimeSelector": False,
@@ -103,6 +106,7 @@ def create_vector_layer_catalog_item(
         return {
 	    "id": "interpolated-water-level-through-time",
             "type": "wms",
+            "crs": "EPSG:4326",
             "name": "Interpolated water level through time",
             "description": (
                 "Time-enabled water-surface elevation along the "
@@ -211,9 +215,28 @@ def get_terria_catalog() -> Catalog:
     the complete TerriaJS catalog.
     """
 
+    # Workspaces are only created when data is first published to them, so skip any that do not exist yet:
+    # querying their layers makes GeoServer respond 500 and would fail the whole catalog.
+    existing_workspaces = _get_existing_workspaces()
+
     return {
         "catalog": [
             get_layers_as_terria_group(workspace)
             for workspace in Workspaces
+            if workspace in existing_workspaces
         ]
     }
+
+
+def _get_existing_workspaces() -> set[str]:
+    """
+    Return the names of the workspaces that currently exist on GeoServer.
+    """
+    response = requests.get(
+        f"{get_geoserver_url()}/workspaces.json",
+        auth=(EnvVariable.GEOSERVER_ADMIN_NAME, EnvVariable.GEOSERVER_ADMIN_PASSWORD)
+    )
+    response.raise_for_status()
+    # GeoServer returns {"workspaces": ""} when there are none
+    workspaces = response.json()["workspaces"] or {}
+    return {workspace["name"] for workspace in workspaces.get("workspace", [])}

@@ -55,12 +55,23 @@ docs/
 # EDDIE/
 temp/
 
+# 3D water surface inputs (downloaded, not versioned)
+data/raw/River_kilometers/
+EDDIE/eddie_antarctica/data/terrain/
+data/raw/Buildings/
+data/raw/Flood_hazard/
+data/raw/Flood_hazard/HWGK2021_HQext/
+# LiDAR terrain tiles and geoid grid (scripts/build_lidar_terrain.sh)
+EDDIE/eddie_antarctica/data/terrain/lidar_egm2008/
+data/raw/Communes/
+# Relative Elevation Model cache (eddie_water_level.rem), rebuilt when the DEM changes
+EDDIE/eddie_antarctica/data/rem/
 
-# Third-party geodata: large, licensed, and obtained per machine. The
-# containers read these from disk via bind mounts, so git never needs them.
+# Local duplicates of geodata that main already tracks through Git LFS
+# (see .../geo/hwgk2021-hq100/). Kept out of git as raw blobs; the
+# containers read them from disk through bind mounts.
 EDDIE/eddie_antarctica/src/static/geo/*.gpkg
 EDDIE/eddie_antarctica/src/static/geo/HWGK2021_HQ100/
-EDDIE/eddie_antarctica/src/static/geo/aoi_alzette_35_50_300m.*
 
 # Files belonging to the vendored EDDIE clone's own repository
 EDDIE/eddie_antarctica/.gitmodules

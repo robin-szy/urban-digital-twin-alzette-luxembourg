@@ -1,9 +1,9 @@
 {
   "homeCamera": {
-    "west": 5.732428,
-    "south": 49.446682,
-    "east": 6.534817,
-    "north": 50.183317
+    "west": 6.12663,
+    "south": 49.555676,
+    "east": 6.168122,
+    "north": 49.591647
   },
   "catalog": [
     {
@@ -20,16 +20,25 @@
       "name": "AOI browser (all built)",
       "isGroup": true,
       "url": "$BACKEND_URL/terria-aoi-init/all.json"
-    },
-    {
-      "id": "aoi-wps-all",
-      "type": "wps-getCapabilities",
-      "name": "AOI tools (all WPS processes)",
-      "url": "$BACKEND_URL/aoi/wps"
     }
   ],
   "baseMaps": {
-    "defaultBaseMapId": "basemap-openstreetmap",
-    "previewBaseMapId": "basemap-openstreetmap"
+    "items": [
+      {
+        "item": {
+          "id": "basemap-geoportail-ortho-latest",
+          "name": "Orthophoto Luxembourg (latest, geoportail.lu)",
+          "type": "wmts",
+          "url": "https://wmts1.geoportail.lu/opendata/service",
+          "layer": "ortho_latest",
+          "attribution": "Orthophoto © Administration du cadastre et de la topographie (ACT), geoportail.lu, CC0",
+          "opacity": 1.0
+        },
+        "image": "build/TerriaJS/images/bing-aerial.png",
+        "contrastColor": "#ffffff"
+      }
+    ],
+    "defaultBaseMapId": "basemap-geoportail-ortho-latest",
+    "previewBaseMapId": "basemap-geoportail-ortho-latest"
   }
 }
