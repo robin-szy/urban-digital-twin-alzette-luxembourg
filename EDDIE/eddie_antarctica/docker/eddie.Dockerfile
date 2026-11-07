@@ -20,12 +20,16 @@ FROM continuumio/miniconda3:23.10.0-1 AS build
 # Miniconda layer for building conda environment
 WORKDIR /app
 
-# Install mamba for faster conda solves
-RUN conda install -c conda-forge mamba
+# No separate mamba install: this base image is conda 23.10, which already
+# uses libmamba as its default solver (verified: `conda config --show solver`
+# reports libmamba). Installing the standalone mamba package added a second
+# full environment solve purely to obtain a solver conda already had, and
+# that solve is what exhausted memory on a smaller Docker VM:
+#     conda install -c conda-forge mamba -> Killed (cannot allocate memory)
 
 # Create Conda environment
 COPY environment.yml .
-RUN mamba env create -f environment.yml
+RUN conda env create -f environment.yml
 
 # Make RUN commands use the new environment:
 SHELL ["conda", "run", "-n", "eddie_antartica", "/bin/bash", "-c"]
