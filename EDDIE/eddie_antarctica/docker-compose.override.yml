@@ -97,3 +97,13 @@ services:
       - ../../data_sources:/app/data_sources:ro
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
+
+  message_broker:
+    # A host-installed redis-server already listens on 127.0.0.1:6379, so the
+    # default "6379:6379" publish fails with "address already in use".
+    #
+    # Nothing in the stack needs the broker on the host: .env.docker-override
+    # points every service at MESSAGE_BROKER_HOST=message_broker, resolved over
+    # the compose network. The publish only ever served host-side debugging.
+    # For that, swap this for - "6380:6379" (6379 is taken by the host redis).
+    ports: !reset []
