@@ -55,5 +55,17 @@ docs/
 # EDDIE/
 temp/
 
-# Generated Terria config (produced from terriajs/client_config.json)
-EDDIE/eddie_antarctica/terriajs/*.generated.json
+
+# Third-party geodata: large, licensed, and obtained per machine. The
+# containers read these from disk via bind mounts, so git never needs them.
+EDDIE/eddie_antarctica/src/static/geo/*.gpkg
+EDDIE/eddie_antarctica/src/static/geo/HWGK2021_HQ100/
+EDDIE/eddie_antarctica/src/static/geo/aoi_alzette_35_50_300m.*
+
+# Files belonging to the vendored EDDIE clone's own repository
+EDDIE/eddie_antarctica/.gitmodules
+EDDIE/eddie_antarctica/pull_request_template.md
+EDDIE/eddie_antarctica/workflows/
+
+# Personal notes
+get_started_eddie.odt

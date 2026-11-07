@@ -21,12 +21,3 @@ services:
       - ./src/static/geo:/app/src/static/geo:ro
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
-  terria_map:
-    volumes:
-      # The image bakes client_config.json in at build time (and the build is
-      # currently broken by a missing date-selector.js), so the config is
-      # mounted instead. config.generated.json is produced from the tracked
-      # client_config.json with the $URL placeholders already filled, so the
-      # entrypoint's in-place substitution cannot dirty the working tree.
-      - ./terriajs/config.generated.json:/app/wwwroot/config.json
-      - ./terriajs/catalog.generated.json:/app/wwwroot/init/catalog.json
