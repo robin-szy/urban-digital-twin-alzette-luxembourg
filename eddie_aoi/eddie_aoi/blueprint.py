@@ -29,6 +29,39 @@ blueprint = Blueprint(
     __name__,
 )
 
+#: Whether this process has already ensured the AOI tables exist.
+_schema_ready = False
+
+
+def _ensure_schema() -> None:
+    """Create the AOI tables if this database has not got them yet.
+
+    They are otherwise created only by the worker, inside build_aoi_reach, the
+    first time a reach is built. On a fresh database volume that leaves every
+    read endpoint failing with UndefinedTable until somebody selects a reach -
+    and /aoi/reaches returning 500 rather than an empty list is wrong, because
+    "no reaches cached yet" is a legitimate answer, not an error.
+
+    create_schema is additive and checkfirst, so this is safe to call against a
+    database that already has the tables. The flag keeps it to one round trip
+    per process rather than one per request.
+    """
+    global _schema_ready  # pylint: disable=global-statement
+    if _schema_ready:
+        return
+
+    from eddie_aoi.db import create_schema, get_engine
+
+    with get_engine().begin() as conn:
+        create_schema(conn)
+    _schema_ready = True
+
+
+@blueprint.before_request
+def _ensure_schema_before_request() -> None:
+    """Guarantee the tables exist before any endpoint queries them."""
+    _ensure_schema()
+
 
 def _wps_service():
     """This plugin's own WPS service, built once on first use.
