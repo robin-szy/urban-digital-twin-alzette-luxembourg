@@ -2,10 +2,12 @@ services:
   backend:
     user: root
     volumes:
+      - ../../eddie_aoi/eddie_aoi:/venv/lib/python3.11/site-packages/eddie_aoi:ro
       - ../../eddie_alzette_ingest/eddie_alzette_ingest:/venv/lib/python3.11/site-packages/eddie_alzette_ingest:ro
       - ../../eddie_precip_interpolation/eddie_precip_interpolation:/venv/lib/python3.11/site-packages/eddie_precip_interpolation:ro
       - ../../eddie_water_level/eddie_water_level:/venv/lib/python3.11/site-packages/eddie_water_level:ro
       - ../../data_sources:/app/data_sources:ro
+      - ./src/static/geo:/app/src/static/geo:ro
       - ../../data/raw/River_kilometers:/app/data/river_kilometers:ro
       - ../../eddie_buildings/eddie_buildings:/venv/lib/python3.11/site-packages/eddie_buildings:ro
       - ../../data/raw/Buildings:/app/data/buildings:ro
@@ -78,10 +80,12 @@ services:
 
   celery_worker:
     volumes:
+      - ../../eddie_aoi/eddie_aoi:/venv/lib/python3.11/site-packages/eddie_aoi:ro
       - ../../eddie_alzette_ingest/eddie_alzette_ingest:/venv/lib/python3.11/site-packages/eddie_alzette_ingest:ro
       - ../../eddie_precip_interpolation/eddie_precip_interpolation:/venv/lib/python3.11/site-packages/eddie_precip_interpolation:ro
       - ../../eddie_water_level/eddie_water_level:/venv/lib/python3.11/site-packages/eddie_water_level:ro
       - ../../data_sources:/app/data_sources:ro
+      - ./src/static/geo:/app/src/static/geo:ro
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
 

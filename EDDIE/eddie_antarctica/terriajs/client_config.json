@@ -1,7 +1,8 @@
 {
   "initializationUrls": [
     "catalog",
-    "$BACKEND_URL/terria-catalog.json"
+    "$BACKEND_URL/terria-catalog.json",
+    "$BACKEND_URL/terria-aoi-init/fallback.json"
   ],
   "parameters": {
     "appName": "Alzette Digital Twin",

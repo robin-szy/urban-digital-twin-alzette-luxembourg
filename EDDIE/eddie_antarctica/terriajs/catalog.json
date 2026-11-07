@@ -5,7 +5,23 @@
     "east": 6.168122,
     "north": 49.591647
   },
-  "catalog": [],
+  "catalog": [
+    {
+      "id": "aoi-selector",
+      "type": "wps",
+      "name": "AOI selector",
+      "url": "$BACKEND_URL/aoi/wps",
+      "identifier": "build_aoi_reach",
+      "description": "Choose a river and a kilometre range. The range is validated against the official kilometre markers before anything is built. The result is drawn on the map; any variant served as a substitute is labelled as one."
+    },
+    {
+      "id": "aoi-browse",
+      "type": "terria-reference",
+      "name": "AOI browser (all built)",
+      "isGroup": true,
+      "url": "$BACKEND_URL/terria-aoi-init/all.json"
+    }
+  ],
   "baseMaps": {
     "items": [
       {

@@ -92,6 +92,15 @@ services:
       - db_postgres
       - message_broker
       - geoserver
+    # GPU reservation stays in the default config so that on a host which has
+    # an NVIDIA GPU (the project host), a plain `docker compose up -d` uses it
+    # with no extra flags.
+    #
+    # On a host WITHOUT the NVIDIA container runtime this reservation makes the
+    # worker fail to start:
+    #     could not select device driver "nvidia" with capabilities: [[gpu]]
+    # Compose has no "use a GPU if one exists" conditional, so opt out with
+    # docker-compose.cpu.yml, or just run ./up.sh which detects the host.
     deploy:
       resources:
         reservations:
