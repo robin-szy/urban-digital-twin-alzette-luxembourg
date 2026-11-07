@@ -584,3 +584,32 @@ def terria_date_init(
             ]
         }
     )
+
+
+# ============================================================
+# PRESENT RAINFALL — TERRIAJS INITIALIZATION
+# ============================================================
+
+@blueprint.route("/terria-present-rainfall.json", methods=["GET"])
+def terria_present_rainfall():
+    from flask import jsonify
+
+    rainfall_id = "alzette-present-rainfall-test"
+
+    return jsonify({
+        "catalog": [
+            {
+                "id": rainfall_id,
+                "type": "wms",
+                "name": "Present rainfall — latest available",
+                "url": "http://localhost:8088/geoserver/input_layers/wms",
+                "layers": "input_layers:precip_live_test",
+                "styles": "input_layers:alzette_rainfall_hourly",
+                "isGeoServer": True,
+                "cacheDuration": "0s",
+                "opacity": 0.65,
+                "show": True
+            }
+        ],
+        "workbench": [rainfall_id]
+    })
