@@ -16,6 +16,7 @@ services:
       - ./data/rem:/app/data/rem
       - ../../data/raw/Flood_hazard:/app/data/flood_hazard:ro
       - ../../data/raw/Communes:/app/data/communes:ro
+      - ../../eddie_base_data/eddie_base_data:/venv/lib/python3.11/site-packages/eddie_base_data:ro
       - ../../eddie_building_population/eddie_building_population:/venv/lib/python3.11/site-packages/eddie_building_population:ro
       - ../../eddie_flood_costs/flood_costs:/venv/lib/python3.11/site-packages/eddie_flood_costs:ro
     environment:
@@ -88,35 +89,27 @@ services:
       - ../../eddie_water_level/eddie_water_level:/venv/lib/python3.11/site-packages/eddie_water_level:ro
       - ../../data_sources:/app/data_sources:ro
       - ./src/static/geo:/app/src/static/geo:ro
+      - ../../eddie_base_data/eddie_base_data:/venv/lib/python3.11/site-packages/eddie_base_data:ro
       - ../../eddie_building_population/eddie_building_population:/venv/lib/python3.11/site-packages/eddie_building_population:ro
       - ../../eddie_flood_costs/flood_costs:/venv/lib/python3.11/site-packages/eddie_flood_costs:ro
-      # Inputs of the two tasks above
+      # Raw inputs eddie_base_data ingests into PostGIS, besides src/static/geo; the DEM stays a file
       - ../../data/raw/River_kilometers:/app/data/river_kilometers:ro
       - ../../data/raw/Buildings:/app/data/buildings:ro
       - ../../data/raw/Flood_hazard:/app/data/flood_hazard:ro
       - ./data/terrain:/app/data/terrain:ro
-      # Writable: population_model.py sets SHAPE_RESTORE_SHX=YES, so GDAL opens the commune shapefile for update
-      - ../../data/raw/Population:/app/data/population
-      # Flood-cost inputs (JRC workbook, reviewed classifications) and runs/; writable for the runs
+      # Flood-cost runs/; writable
       - ../../data/flood_costs:/app/data/flood_costs
     environment:
       - DATA_SOURCES_DIR=/app/data_sources
       - RIVER_KILOMETRAGE_GPKG=/app/data/river_kilometers/kilometrage-des-cours-deau.gpkg
-      # eddie_building_population: BU.Building.gml, LU00.gpkg, LIMADM_COMMUNES.shp, rnpp_population_per_municipality.csv
-      - POPULATION_DATA_DIR=/app/data/population
       # eddie_flood_costs (README "Dependencies and configuration")
       - FLOOD_COSTS_PROJECT_ROOT=/app/data/flood_costs
       - FLOOD_COSTS_RUNS_DIR=/app/data/flood_costs/runs
       - FLOOD_COSTS_GDAL_LIBRARY=/venv/lib/libgdal.so
       - FLOOD_COSTS_INPUT_DEM=/app/data/terrain/dem_merged.tif
-      - FLOOD_COSTS_INPUT_BUILDINGS=/app/data/buildings/ACT2023v2_Buildings3d_Footprints.gpkg
-      - FLOOD_COSTS_INPUT_MARKERS=/app/data/river_kilometers/kilometrage-des-cours-deau.gpkg
-      - FLOOD_COSTS_INPUT_HQ10=/app/data/flood_hazard/hwgk2021-hq10.geojson
-      - FLOOD_COSTS_INPUT_HQ100=/app/data/flood_hazard/hwgk2021-hq100.geojson
-      - FLOOD_COSTS_INPUT_LANDUSE=/app/src/static/geo/alzette_35_50_landuse_ownership.geojson
-      - FLOOD_COSTS_INPUT_JRC_WORKBOOK=/app/data/flood_costs/inputs/jrc/copy_of_global_flood_depth-damage_functions__30102017.xlsx
+      - FLOOD_COSTS_INPUT_JRC_WORKBOOK=/app/src/static/geo/copy_of_global_flood_depth-damage_functions__30102017.xlsx
       # Devika's human-reviewed OSM classifications (not recomputed here)
-      - FLOOD_COSTS_STAGE_OSM=/app/data/flood_costs/inputs/osm_classification
+      - FLOOD_COSTS_STAGE_OSM=/app/src/static/geo
 
   celery_beat:
     volumes:

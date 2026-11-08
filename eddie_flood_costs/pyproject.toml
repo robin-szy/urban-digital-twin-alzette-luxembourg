@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eddie_flood_costs"
+version = "0.2.0"
+description = "Provisional Alzette flood-depth reconstruction, JRC damages and read-only cost API"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["flask>=3.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "setuptools>=61", "wheel"]
+# Lowered to what the EDDIE image ships (geopandas 0.14.4, numpy 1.26, shapely 2.0.1/GEOS 3.11).
+compute = [
+    "geopandas>=0.14",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "pyproj>=3.6",
+    "shapely>=2.0",
+]
+
+[tool.setuptools]
+# EDDIE discovers eddie_* import names. Both installed names use this one source
+# directory; flood_costs is the canonical API. No second source package is needed.
+packages = ["flood_costs", "eddie_flood_costs"]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+eddie_flood_costs = "flood_costs"
+
+[tool.setuptools.data-files]
+"share/eddie_flood_costs/scripts" = ["scripts/build_cost_lookup.py", "scripts/apply_classification_review.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

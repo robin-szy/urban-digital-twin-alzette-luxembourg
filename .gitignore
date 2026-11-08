@@ -73,6 +73,16 @@ EDDIE/eddie_antarctica/data/rem/
 EDDIE/eddie_antarctica/src/static/geo/*.gpkg
 EDDIE/eddie_antarctica/src/static/geo/HWGK2021_HQ100/
 
+# Raw inputs of eddie_base_data, placed by hand on each host
+EDDIE/eddie_antarctica/src/static/geo/BU.Building.*
+EDDIE/eddie_antarctica/src/static/geo/LIMADM_COMMUNES.*
+EDDIE/eddie_antarctica/src/static/geo/rnpp_population_per_municipality.csv
+EDDIE/eddie_antarctica/src/static/geo/copy_of_global_flood_depth-damage_functions__*.xlsx
+EDDIE/eddie_antarctica/src/static/geo/provisionally_classified_buildings.csv
+EDDIE/eddie_antarctica/src/static/geo/building_jrc_osm_classification.csv
+EDDIE/eddie_antarctica/src/static/geo/classification_review_decisions.json
+EDDIE/eddie_antarctica/src/static/geo/target_manifest.json
+
 # Files belonging to the vendored EDDIE clone's own repository
 EDDIE/eddie_antarctica/.gitmodules
 EDDIE/eddie_antarctica/pull_request_template.md
