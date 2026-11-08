@@ -420,7 +420,7 @@ def _water_surface_init(
             "id": rainfall_id,
             "type": "wms",
             "name": "Present rainfall (test)",
-            "url": "http://localhost:8088/geoserver/wms",
+            "url": "http://localhost:8088/geoserver/input_layers/wms",
             "layers": "input_layers:precip_live_test",
             "show": True,
             "opacity": 0.65,

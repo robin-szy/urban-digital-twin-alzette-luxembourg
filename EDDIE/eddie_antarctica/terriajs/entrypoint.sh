@@ -44,7 +44,7 @@ fi
 if ! grep -q "water-level-control.js" wwwroot/index.html
 then
   sed -i \
-    's#</body>#<script src="/water-level-control.js?v=21"></script></body>#' \
+    's#</body>#<script src="/water-level-control.js?v=24"></script></body>#' \
     wwwroot/index.html
 fi
 # Run original terria startup command

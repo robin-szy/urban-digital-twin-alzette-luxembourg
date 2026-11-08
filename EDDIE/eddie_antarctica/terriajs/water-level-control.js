@@ -203,10 +203,34 @@
     return names.length ? "/without/" + names.join(",") : "";
   }
 
+  // Terria starts listening for hash changes just before it mounts, so one made earlier is lost.
+  // Its startup init files then set the workbench, so wait for those too, or they replace this view.
+  var INIT_HASH_MAX_WAIT_MS = 20000;
+  var pendingInitHash = null;
+
+  function setInitHash(hash) {
+    var waiting = pendingInitHash !== null;
+    pendingInitHash = hash;
+    if (waiting) {
+      return;
+    }
+    var started = Date.now();
+    (function apply() {
+      var t = findTerria();
+      var startupDone = t && t.workbench.items.length > 0;
+      if (!t || (!startupDone && Date.now() - started < INIT_HASH_MAX_WAIT_MS)) {
+        setTimeout(apply, 250);
+        return;
+      }
+      window.location.hash = pendingInitHash;
+      pendingInitHash = null;
+    })();
+  }
+
   function loadInit(path) {
     currentView = path;
     var prefix = showBuildings ? "buildings/" : "";
-    window.location.hash = BACKEND_URL + "/terria-water-init/" + namesPrefix() + prefix + path + ".json";
+    setInitHash(BACKEND_URL + "/terria-water-init/" + namesPrefix() + prefix + path + ".json");
   }
 
   // A gauge disabled, or without a stage (Livange without a recent reading), is sent as x: the
@@ -1285,7 +1309,9 @@
         ui.pf.value = data.pfaffenthal_cm;
         ui.he.value = data.hesperange_cm;
         ui.li.value = data.livange_cm === null ? "" : data.livange_cm;
-        if (!currentView &&
+        // Do not replace a different view that is open (e.g. present rainfall). An empty hash
+        // has none, so the live water still loads on a fresh page.
+        if (!currentView && window.location.hash &&
             !window.location.hash.includes("/terria-water-init/")) {
           return;
         }
