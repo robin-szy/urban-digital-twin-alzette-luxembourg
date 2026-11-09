@@ -436,3 +436,67 @@ reviewed classification files in place, and it names any that are missing. Those
 
 This workflow does not take a selectable AOI. It computes its own km 35–50 study area and its validations
 enforce that cohort, so connecting a reach selection to it needs a decision about those validations.
+
+
+## Building popup API in the active backend
+
+The deployed package is the repository-root `eddie_flood_costs/flood_costs/`,
+mounted as `eddie_flood_costs` by the existing backend Compose override. The popup
+uses its existing blueprint; no extra plugin or blueprint registration is needed.
+The package configuration installs `popup_context.py` under both supported import
+names (`flood_costs` and `eddie_flood_costs`) without a packaging change.
+
+`GET /flood-costs/popup/<buildingid>.json` returns one exact original ACT
+`buildingid`, category, whole-building footprint area, and separate `hq10` and
+`hq100` records containing `damage_eur2010`, `monetary_status`, `quality_flags`,
+`depth_mean_m` and `exposure_status`. Responses identify provisional EUR 2010
+estimates. Numeric zero is a calculated zero; unknown amounts remain JSON null.
+Absent building IDs return 404 with null amounts; unavailable/invalid lookup data
+returns 503. POST is not supported. The existing building and summary routes stay
+unchanged. No reconstruction, damage calculation, database writes or scenario
+summation is performed by this endpoint.
+
+The existing `_lookup()` selects `FLOOD_COSTS_LOOKUP_PATH` from Flask config or the
+environment. If unset, it retains the team's current database implementation:
+`flood_cost_lookup`, the version-keyed `_load_db_snapshot()` cache and the EDDIE
+database engine. An invalid explicit file path returns unavailable rather than
+silently selecting a different dataset. The popup uses the same validated lookup
+as `/summary/<scenario>.json` and `/buildings/<buildingid>/<scenario>.json`.
+
+Optional `FLOOD_COSTS_DETAILS_PATH` (Flask config or environment) points to the
+original `building_flood_damage.geojson` produced alongside that lookup. The
+GeoJSON bytes must match `metadata.source_sha256["building_flood_damage.geojson"]`
+and its building classification/damage record must match the lookup. Only then
+are full-building area, saved mean depths and exposure attached by exact original
+ID. Missing context leaves these fields null. Invalid/mismatched context also
+adds a warning and never changes valid monetary estimates. CZML entity IDs and
+polygon-part areas are never used as substitutes. `popup_context.py` is reused
+from the Devika module; unrelated calculations and PostGIS tasks are unchanged.
+
+The existing frontend adapter requests
+`$BACKEND_URL/flood-costs/popup/<encoded buildingid>.json`. Its URL and response
+contract need no changes. The resolved Docker COPY and entrypoint initialization
+load that adapter while retaining the team's date selector and water controls.
+
+Neither popup configuration path is set in the checked-in backend Compose
+configuration. For costs, use the existing populated database or explicitly
+configure an external lookup file. For verified area/depth/exposure, arrange a
+read-only backend mount and configure `FLOOD_COSTS_DETAILS_PATH` for the matching
+original monetary GeoJSON. Worker-only mounts and environment settings do not
+make those files visible to the backend. Do not copy datasets into Git or infer
+context from another run. These deployment changes are not implemented here.
+
+Run the lightweight active-package tests from the repository root:
+
+```bash
+python -B -m pytest -c eddie_flood_costs/pyproject.toml eddie_flood_costs/tests -q
+```
+
+`tests/test_popup_context.py` reuses the approved small synthetic fixtures.
+`tests/test_popup_api.py` checks real Flask responses with both configured files
+and a synthetic in-memory SQLAlchemy database, retaining the database SELECTs,
+cache and original routes. It also renders actual API responses through the
+existing frontend adapter when Node or JSC is available (`EDDIE_POPUP_JS_ENGINE`
+can name an existing JSC executable). No Docker, external API or national data
+is used. SQLite contract checks do not establish live PostGIS or browser
+compatibility; those require separate deployment verification.

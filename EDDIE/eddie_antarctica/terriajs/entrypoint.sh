@@ -47,6 +47,14 @@ then
     's#</body>#<script src="/water-level-control.js?v=21"></script></body>#' \
     wwwroot/index.html
 fi
+# Add only the optional flood-cost popup adapter; existing page scripts stay intact.
+if [[ -f "wwwroot/flood-cost-popup.js" ]]; then
+  SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "wwwroot/flood-cost-popup.js")
+  echo "$SUBBED" > "wwwroot/flood-cost-popup.js"
+  if ! grep -q 'src="/flood-cost-popup.js' wwwroot/index.html; then
+    sed -i 's#</body>#<script src="/flood-cost-popup.js?v=1"></script></body>#' wwwroot/index.html
+  fi
+fi
 # Run original terria startup command
 node ./node_modules/terriajs-server/lib/app.js --config-file serverconfig.json
 

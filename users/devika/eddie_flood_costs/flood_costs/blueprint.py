@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify
 
 from .cost_lookup import CostLookup, InvalidScenario, LookupValidationError, normalize_scenario
+from .popup_context import PopupDetails, build_popup_payload
 
 # EDDIE imports <plugin>.blueprint and registers this exact module-level name.
 blueprint = Blueprint("eddie_flood_costs", __name__, url_prefix="/flood-costs")
@@ -55,4 +56,34 @@ def building_cost(buildingid, scenario):
     except (OSError, LookupValidationError) as exc:
         return _unavailable(exc)
     return jsonify({"status": "success" if result["found"] else "not_found", **result}), 200 if result["found"] else 404
+
+
+@lru_cache(maxsize=4)
+def _load_popup_details(path: str, mtime_ns: int, size: int) -> PopupDetails:
+    return PopupDetails(path)
+
+
+@blueprint.route("/popup/<buildingid>.json", methods=["GET"])
+def building_popup(buildingid):
+    """Both precomputed scenarios for one original ID; no geometry or totals.
+
+    Optional context is read from the original monetary GeoJSON, never generated
+    here. The existing scenario and summary endpoint contracts stay unchanged.
+    """
+    try:
+        lookup = _lookup()
+    except (OSError, LookupValidationError) as exc:
+        return _unavailable(exc)
+    details, warning = None, None
+    configured = current_app.config.get("FLOOD_COSTS_DETAILS_PATH") or os.environ.get("FLOOD_COSTS_DETAILS_PATH")
+    if configured:
+        try:
+            path = Path(configured).expanduser().resolve()
+            stat = path.stat()
+            details = _load_popup_details(str(path), stat.st_mtime_ns, stat.st_size)
+        except (OSError, LookupValidationError) as exc:
+            current_app.logger.warning("Flood-cost popup context unavailable: %s", exc)
+            warning = "Whole-building area, depth and exposure are unavailable."
+    result = build_popup_payload(lookup, buildingid, details, warning)
+    return jsonify(result), 200 if result["found"] else 404
 

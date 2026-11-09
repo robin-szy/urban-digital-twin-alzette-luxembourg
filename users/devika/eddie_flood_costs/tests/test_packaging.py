@@ -24,7 +24,7 @@ def test_package_configuration_matches_canonical_and_eddie_import_names():
     for name in packaging["packages"]:
         source = ROOT / packaging["package-dir"].get(name, name)
         for required in ("__init__.py", "blueprint.py", "tasks.py", "cost_lookup.py",
-                         "depth_reconstruction.py", "damage_calculation.py"):
+                         "depth_reconstruction.py", "damage_calculation.py", "popup_context.py"):
             assert (source / required).is_file()
     assert "flask>=3.0" in config["project"]["dependencies"]
     assert importlib.import_module("flood_costs.tasks").__name__ == "flood_costs.tasks"
@@ -48,7 +48,7 @@ def test_built_wheel_exposes_eddie_discovery_name_without_extra_source_package(t
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         for package in ("flood_costs", "eddie_flood_costs"):
-            for filename in ("__init__.py", "blueprint.py", "tasks.py", "cost_lookup.py"):
+            for filename in ("__init__.py", "blueprint.py", "tasks.py", "cost_lookup.py", "popup_context.py"):
                 assert f"{package}/{filename}" in names
         assert not any(name.startswith("tests/") for name in names)
         archive.extractall(installed)

@@ -19,7 +19,8 @@ eddie_flood_costs/
 │   ├── tasks.py
 │   ├── cost_lookup.py
 │   ├── depth_reconstruction.py
-│   └── damage_calculation.py
+│   ├── damage_calculation.py
+│   └── popup_context.py
 ├── scripts/
 │   ├── build_cost_lookup.py
 │   └── apply_classification_review.py
@@ -28,7 +29,10 @@ eddie_flood_costs/
 │   ├── test_cost_lookup.py
 │   ├── test_damage_calculation.py
 │   ├── test_depth_reconstruction.py
-│   └── test_packaging.py
+│   ├── test_packaging.py
+│   ├── test_popup_context.py
+│   ├── test_popup_frontend.py
+│   └── popup_frontend_checks.js
 └── README.md
 ```
 
@@ -41,6 +45,7 @@ eddie_flood_costs/
 | `flood_costs/cost_lookup.py` | Unchanged validated `CostLookup`, source reconciliation, summary calculation, external lookup writer and builder CLI. Standard library only. |
 | `flood_costs/depth_reconstruction.py` | Adapted `reconstruct_depths.py`; `WindowedDEM`, reconstruction, sample assignment and summaries. Embeds the ten required frozen reference functions and gauge constants. |
 | `flood_costs/damage_calculation.py` | Adapted `calculate_damage.py`; `read_jrc`, `fraction`, `build_weights`, `weighted_estimate`, validation, damage outputs and methodology report. |
+| `flood_costs/popup_context.py` | Read-only presentation context joined by original ID; verifies monetary GeoJSON provenance before returning whole-building area, depth and exposure. |
 | `scripts/build_cost_lookup.py` | Thin CLI wrapper around `flood_costs.cost_lookup.main`; no duplicate lookup implementation. |
 | `scripts/apply_classification_review.py` | Validate/replay the six frozen reviewed classification artifacts; `--check-only` performs no writes. |
 | `tests/conftest.py` | Synthetic saved-result/curve/workbook fixtures and isolation from inherited research configuration. |
@@ -48,6 +53,8 @@ eddie_flood_costs/
 | `tests/test_damage_calculation.py` | JRC parsing/interpolation, area weighting, dry/unknown losses, partial flooding and calculated scenario aggregation. |
 | `tests/test_depth_reconstruction.py` | Sample assignment, summaries, in-memory DEM sampling and actual two-building HQ10/HQ100 reconstruction with synthetic inputs. |
 | `tests/test_packaging.py` | Canonical/EDDIE source mappings and an optional offline wheel/discovery check using a temporary source copy. |
+| `tests/test_popup_context.py` | Exact-ID, zero/null, provenance, full-building area and read-only popup endpoint checks. |
+| `tests/test_popup_frontend.py`, `tests/popup_frontend_checks.js` | Dependency-free JavaScript controller checks using existing Node or configured JavaScriptCore. |
 | `README.md` | Inputs, methodology, configuration, commands, API contract and integration limits. |
 
 ## External input datasets
@@ -193,6 +200,7 @@ interpreter and set `PYTHONPATH` as below. Imports alone open no data/config fil
 | `FLOOD_COSTS_INPUT_CLASSIFICATION_CANDIDATES` | External pre-review candidate CSV; defaults to the candidates stage CSV. |
 | `FLOOD_COSTS_GDAL_LIBRARY` | Optional explicit GDAL shared library; otherwise locate the Pyogrio wheel or system library. |
 | `FLOOD_COSTS_LOOKUP_PATH` | External precomputed JSON for the API, from Flask config or the environment. Independent of workflow configuration; no default lookup. |
+| `FLOOD_COSTS_DETAILS_PATH` | Optional original monetary `building_flood_damage.geojson` for popup area, depth and exposure. Its bytes must match the lookup's GeoJSON SHA-256 provenance. Never rewritten. |
 
 For workflow paths, environment overrides take precedence over JSON, then defaults.
 Explicit JSON input paths are relative to project root and take precedence over
@@ -347,11 +355,98 @@ N/A and must never be converted to zero by a client.
   once per original ID. Do not join using unstable `building-{index}` display IDs.
   A future adapter/UI must preserve geometry, colours, water controls and epochs,
   refresh joins after scenario changes, label nulls N/A, and avoid showing HQ losses
-  as live/manual-stage losses. No CZML adapter or frontend integration is implemented.
+  as live/manual-stage losses. The additive feature-info adapter below implements
+  the popup connection without changing CZML geometry or water controls.
 
 Generated lookup/monetary outputs contain linkable building-level financial
 estimates and remain external. The tree above contains application code, metadata,
 documentation and synthetic tests, with no source datasets or generated outputs.
+
+## Clean, scenario-aware feature information
+
+The local integration adds these shared frontend changes only:
+
+- `EDDIE/eddie_antarctica/terriajs/flood-cost-popup.js`: adds `featureInfoTemplate`
+  to the existing catalog item owning each picked ACT building. It adds no catalog
+  layer, changes no map URL or water controls, and retains original properties.
+  Other features in a mixed layer retain the original template/raw description.
+- `terriajs/Dockerfile`: one additional COPY for that script.
+- `terriajs/entrypoint.sh`: optional URL substitution and idempotent script
+  injection. Existing scripts, catalogs, controls and startup commands remain.
+
+The primary template shows Building Flood Damage, original building ID, category,
+whole-building area, selected HQ scenario(s), saved positive-sample mean depth,
+estimated damage and exposure, labelled **Provisional · 2010 EUR**. Diagnostics
+remain available through Terria's raw-data view rather than being deleted.
+
+The small **Popup comparison** switches appear when an ACT building is selected.
+Their defaults follow the map: HQ10 selects HQ10 only; HQ100 selects HQ100 only;
+live/manual/HQextreme starts without either cost scenario. Enabling the other
+popup switch shows both alternatives separately, without adding their costs or
+changing the map. A new map scenario or newly selected building resets the popup
+to the current map default. Neither switch selected shows building information
+without scenario amounts. Switch changes update Cesium properties, which Terria's
+existing template reaction observes while the popup remains open.
+
+The map controller's existing mutually exclusive HQ checkboxes are only read.
+The adapter detects their IDs (`water-level-control-hq10` / `hq100`) or the current
+CZML scenario query, and uses the same React-context discovery approach already
+used by the team water controller. On a scenario init/workbench replacement it
+attempts to restore the selected original ACT ID in the newly loaded entities,
+never using `building-<index>` as a financial key or reopening a closed popup.
+This bridge depends on the inspected TerriaJS React/Cesium interfaces and needs
+checking again when upgrading TerriaMap.
+
+### Read-only data connection
+
+`GET /flood-costs/popup/<buildingid>.json` returns one original building's category,
+area, both saved scenario amounts/statuses/flags, saved mean depths and exposure.
+It contains no geometry or cumulative total. Existing summary and scenario
+endpoints retain their contracts. A missing ID returns 404 with null amounts;
+an unavailable lookup returns 503. The frontend rejects mismatched response IDs,
+currencies and price years, and caches requests by original building ID.
+
+`FLOOD_COSTS_LOOKUP_PATH` supplies monetary values. Optional
+`FLOOD_COSTS_DETAILS_PATH` supplies context from the original monetary GeoJSON.
+Context is accepted only when the complete file's digest matches
+`metadata.source_sha256.building_flood_damage.geojson` and that building's saved
+classification/scenario records match the lookup. A mismatched details file does
+not replace valid lookup costs: context stays unavailable with a warning.
+
+Where an existing monetary GeoJSON/WFS layer already carries full-building
+metadata, its fields can supplement matching API costs. If the API is unreachable,
+that same building's explicit EUR2010 monetary fields can be shown with a source
+warning. A verified API 404 always stays N/A. CZML's recomputed part area is never
+used as the whole-building financial area. Missing depths remain N/A rather than
+being inferred from damage or the current water visualization.
+
+For deployment later, the backend must expose the installed flood-cost plugin and
+the two external files through the configuration above. The frontend script gets
+the existing `$BACKEND_URL` substitution. No datasets, dependency installation,
+Docker rebuild, service start, Windows change or deployment is performed by this
+local implementation. This working checkout lacks the newer team water-control/
+3D modules; the adapter detects them when present and leaves them untouched. The
+exact live layer remains unverified until tested against the running frontend.
+The repository's existing `EDDIE/` ignore rule also hides the new shared script
+from ordinary untracked-file listings. Include that exact script explicitly in
+any later approved publication; no ignore rule or Git index is changed here.
+
+### Popup verification
+
+JavaScript checks cover positive/zero/N/A formatting, all four switch combinations,
+active-map defaults, updates while selected, exact IDs, late responses,
+asynchronous workbench replacement, preservation of raw properties/original
+templates and non-building selections. They run under existing Node, `jsc` on
+PATH, or the executable configured with `EDDIE_POPUP_JS_ENGINE`. Tests install no
+JavaScript dependencies. Python tests validate provenance, exact IDs, missing/
+unknown/zero costs and full-building area. Original saved data were also read to
+verify representative positive HQ10/HQ100, zero and unknown records without
+recalculation.
+
+These are controller/data tests, not live browser acceptance tests. A running
+Terria frontend/backend is unavailable here and Flask HTTP tests remain skipped
+when Flask is absent. The actual React-rendered popup, panel position and selection
+preservation in the deployed Terria build need a final browser check.
 
 ## Local verification of this reorganisation
 
@@ -388,11 +483,13 @@ python -B -m pytest -c "$FLOOD_MODULE/pyproject.toml" "$FLOOD_MODULE/tests" \
 | Aggregation | Independently expected scenario totals from calculated synthetic building amounts; unknown contributions excluded and completeness retained. |
 | Plugin compatibility | Distribution name, canonical source package, installed `eddie_*` mapping, task interface and optional wheel import/discovery check. |
 
-Current result: **52 passed, 3 skipped**, with two deprecation warnings from frozen
+Current popup-update result: **61 passed, 4 skipped**, including the JavaScript
+controller harness, with two deprecation warnings from frozen
 reference code using `shapely.vectorized.contains`. The source mapping matches the
 documented EDDIE prefix/task/blueprint convention. Flask, setuptools and wheel are
 absent in the current environment; dependencies were not downloaded. The skipped
-tests are the two Flask HTTP tests and the offline wheel-build check. All runnable
+tests are the two original Flask HTTP tests, the new popup HTTP test and the
+offline wheel-build check. All runnable
 tests pass without using the original result datasets.
 
 The wheel test uses `--no-index --no-deps --no-build-isolation`, builds only a
@@ -400,6 +497,6 @@ temporary source copy, checks both import names and discovers the `eddie_*` name
 With Flask installed, it also checks both blueprint interfaces. The actual wheel
 mapping remains unverified until that test runs in a prepared environment; adding
 the source directory to `PYTHONPATH` still exposes only `flood_costs`. The EDDIE
-loader is unavailable here, so no live EDDIE integration is claimed. The frozen
+application is not running here, so no live EDDIE integration is claimed. The frozen
 Shapely helper will need compatibility review if a future version removes it;
 its calculation code was not changed in this test update.
