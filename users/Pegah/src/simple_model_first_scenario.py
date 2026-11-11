@@ -1,7 +1,7 @@
 import geopandas as gpd
 import pandas as pd
 
-def process_non_residential_impact(buildings_gdf, total_water_volume=50000.0, percentage=0.10, unit_price=12.5):
+def non_residential_water_allocation(buildings_gdf, total_water_volume=50000.0, percentage=0.10, unit_price=12.5):
     '''
     Processes water volume allocation and financial costs for non-residential 
     buildings. 
@@ -40,18 +40,18 @@ def process_non_residential_impact(buildings_gdf, total_water_volume=50000.0, pe
     extra_water_pool = total_water_volume * percentage
 
     # 5. Initialize all economic columns with zeros for every building
-    df["total_water_baseline"] = total_water_volume
-    df["extra_water_pool"] = extra_water_pool
-    df["unit_price"] = unit_price
+    df["total_riverwater_volume"] = total_water_volume
+    df["extra_riverwater_volume"] = extra_water_pool
+    df["unit_riverwater_price"] = unit_price
     df["area_share"] = 0.0
-    df["allocated_water_volume"] = 0.0
-    df["total_cost"] = 0.0
+    df["allocated_riverwater_volume"] = 0.0
+    df["total_riverwater_cost"] = 0.0
     
     # 6. Populate values ONLY for the actual non-residential buildings
     if total_non_res_area > 0:
         df.loc[is_non_res, "area_share"] = df.loc[is_non_res, area_column] / total_non_res_area
-        df.loc[is_non_res, "allocated_water_volume"] = extra_water_pool * df.loc[is_non_res, "area_share"]
-        df.loc[is_non_res, "total_cost"] = df.loc[is_non_res, "allocated_water_volume"] * unit_price
+        df.loc[is_non_res, "allocated_riverwater_volume"] = extra_water_pool * df.loc[is_non_res, "area_share"]
+        df.loc[is_non_res, "total_riverwater_cost"] = df.loc[is_non_res, "total_riverwater_cost"] * unit_price
     
     print(f"Processed {len(df)} total buildings:")
     print(f" -> Non-residential buildings found: {is_non_res.sum()}")

@@ -77,7 +77,7 @@ def calculate_population_and_heights(buildings_path, commune_path, population_pa
     buildings["volume_m3"] = buildings["footprint_m2"] * buildings["final_height_m"]
 
     # Aggregate Commune Population Data
-    pop_columns = [col for col in ["femmes_mineures", "hommes_mineurs", "femmes_majeures", "hommes_majeures"] if col in population_df.columns]
+    pop_columns = [col for col in ["femmes_mineures", "hommes_mineurs", "femmes_majeures", "hommes_majeurs"] if col in population_df.columns]
     if pop_columns:
         population_df["population"] = population_df[pop_columns].sum(axis=1)
 
