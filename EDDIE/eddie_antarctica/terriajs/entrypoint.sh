@@ -26,7 +26,8 @@ for FILE_TO_SUB in \
   "wwwroot/config.json" \
   "wwwroot/init/catalog.json" \
   "wwwroot/date-selector.js" \
-  "wwwroot/water-level-control.js"
+  "wwwroot/water-level-control.js" \
+  "wwwroot/weather-control.js"
 do
   SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "$FILE_TO_SUB")
   # Overwrite original file.
@@ -66,5 +67,15 @@ if [[ -f "wwwroot/flood-cost-popup.js" ]]; then
   fi
   sed -i 's#src="/flood-cost-popup.js?v=[^"]*"#src="/flood-cost-popup.js?v=2"#g' wwwroot/index.html
 fi
+# Inject the weather layer (rain, wind, temperature, forecast, history, 2050).
+if ! grep -q "weather-control.js" wwwroot/index.html
+then
+  sed -i \
+    's#</body>#<script src="/weather-control.js?v=10"></script></body>#' \
+    wwwroot/index.html
+fi
+# Refresh the query version when this page already contains an older injection.
+sed -i 's#src="/weather-control.js?v=[^"]*"#src="/weather-control.js?v=10"#g' wwwroot/index.html
+
 # Run original terria startup command
 node ./node_modules/terriajs-server/lib/app.js --config-file serverconfig.json
