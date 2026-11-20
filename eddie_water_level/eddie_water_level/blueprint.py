@@ -212,6 +212,18 @@ _published_cache: dict = {}
 PUBLISHED_CACHE_S = 60.0
 
 
+def _current_reach_id() -> str:
+    """The twin's current reach (eddie_aoi), for map items that must change with it."""
+    try:
+        from eddie_aoi.current import current_reach  # pylint: disable=import-outside-toplevel
+        from eddie_aoi.db import get_engine  # pylint: disable=import-outside-toplevel
+
+        with get_engine().connect() as conn:
+            return current_reach(conn).reach_id
+    except Exception:  # pylint: disable=broad-except  # no AOI module: one fixed item, as before
+        return "default"
+
+
 def _published(key: str, fresh: bool = False) -> bool:
     """Tell whether GeoServer serves the layer behind a map layer (checked at most once a minute, unless fresh)."""
     # pylint: disable=import-outside-toplevel
@@ -509,15 +521,26 @@ def _water_surface_init(
             })
             workbench.append(f"alzette-flood-zone-{scenario_name}")
     if "fees" in map_layers and _published("fees"):
+        # AOI change (2026-11-20): the layer shows the CURRENT reach only (a filtered view), so
+        # its content moves along the river when another reach is selected. Terria keeps a WMS
+        # item's extent (read once from GetCapabilities) and its tiles per item id, so with one
+        # fixed id a new reach outside the first one's extent was never requested. Hence:
+        # an id per reach, an explicit extent (Luxembourg), and the reach as a tile-cache key.
+        # The client names the result it wants ("fees.<version>", from /map-layers/status.json),
+        # so a new result gets a new init URL - Terria caches init files by URL.
+        reach = _current_reach_id()
+        version = g.get("fees_version") or reach
         catalog.append({
-            "id": "alzette-water-fees",
+            "id": f"alzette-water-fees-{version}",
             "type": "wms",
             "name": "Water fee per building (non-residential model)",
             "url": f"{_geoserver_url()}/input_layers/wms",
             "layers": "building_population_4326",
             "opacity": 0.8,
+            "rectangle": {"west": 5.73, "south": 49.44, "east": 6.53, "north": 50.19},
+            "parameters": {"aoi": version},
         })
-        workbench.append("alzette-water-fees")
+        workbench.append(f"alzette-water-fees-{version}")
 
     query_id = ""
     if czml_query is not None:
@@ -800,6 +823,8 @@ def terria_water_init_with_layers(kinds: str, rest: str) -> ResponseValue:
             g.map_layers.append(name)
             if name == "rain" and version.isdigit():
                 g.rain_version = version
+            if name == "fees" and version.isalnum():  # AOI change: see _fees_version
+                g.fees_version = version
     adapter = current_app.url_map.bind_to_environ(request.environ)
     endpoint, args = adapter.match(f"/terria-water-init/{rest}", method="GET")
     return current_app.view_functions[endpoint](**args)
@@ -815,7 +840,30 @@ def map_layers_status() -> ResponseValue:
     (interpolated rainfall of past days) and fees (the water-fee model's result). A map layer whose
     data is missing is left out of the init files, so the map can say why instead of failing to load.
     """
-    return jsonify({"status": "success", **{key: _published(key) for key in GEOSERVER_LAYERS}})
+    return jsonify({"status": "success", **{key: _published(key) for key in GEOSERVER_LAYERS},
+                    "fees_version": _fees_version(),
+                    # AOI change: the map moves its AOI layers to this reach (water-level-control.js).
+                    "aoi_reach": _current_reach_id()})
+
+
+def _fees_version() -> str | None:
+    """AOI change (2026-11-20): identifies the water-fee result the map shows now.
+
+    Changes when the current reach changes or the model writes a new result for it, so the map
+    can notice (it polls this route) and load the layer again under a new id and URL.
+    """
+    try:
+        import hashlib  # pylint: disable=import-outside-toplevel
+
+        import sqlalchemy as sa  # pylint: disable=import-outside-toplevel
+        from eddie.digitaltwin import setup_environment  # pylint: disable=import-outside-toplevel
+
+        with setup_environment.get_database().connect() as conn:
+            row = conn.execute(sa.text(
+                "SELECT MAX(reach_id), MAX(computed_utc) FROM building_population_4326")).one()
+        return hashlib.md5(f"{row[0]}|{row[1]}".encode()).hexdigest()[:10]
+    except Exception:  # pylint: disable=broad-except  # not computed yet
+        return None
 
 
 @blueprint.route(

@@ -222,6 +222,9 @@
   function namesPrefix() {
     var kinds = Object.keys(showNames).filter(function (kind) { return showNames[kind]; });
     var layerKinds = Object.keys(mapLayers).filter(function (kind) { return mapLayers[kind]; }).map(function (kind) {
+      if (kind === "fees" && feesVersion) {
+        return "fees." + feesVersion;  // a new result (or reach) gets a new init URL
+      }
       return kind === "rain" && rainVersion ? "rain." + rainVersion : kind;
     });
     return (layerKinds.length ? "layers/" + layerKinds.join(",") + "/" : "") +
@@ -1537,6 +1540,36 @@
   // Which data-dependent layers GeoServer serves now (GET /map-layers/status.json): the backend
   // leaves the others out of the init files, and the panels say why.
   var layerStatus = null;
+  var feesVersion = null;
+
+  // AOI change (2026-11-20): the AOI layers on the workbench (centerline, corridors, buffer,
+  // watersheds, ...) show the twin's CURRENT reach. Terria loads a GeoJSON layer once, so when
+  // another reach is selected, each such layer gets the current reach's URL (a new URL makes
+  // Terria load it again). The selector's own result layers ("AOI corridor - <river> km ...")
+  // name one reach on purpose and are left alone.
+  var AOI_LAYER_URL = /\/aoi\/(?:reach\/[^/]+|current)\/variants\.geojson\?variant_key=([^&]+)/;
+
+  function followAoiReach(reach) {
+    var t = findTerria();
+    if (!reach || !t || !t.workbench) {
+      return;
+    }
+    (t.workbench.items || []).forEach(function (item) {
+      var match = typeof item.url === "string" && item.url.match(AOI_LAYER_URL);
+      if (!match || !item.setTrait || /^AOI corridor - /.test(item.name || "")) {
+        return;
+      }
+      var url = BACKEND_URL + "/aoi/reach/" + reach + "/variants.geojson?variant_key=" + match[1];
+      if (item.url !== url) {
+        item.setTrait("user", "url", url);
+        // The startup group's names carry the km range of the reach it opened on.
+        var name = (item.name || "").replace(/\s*\([^()]* km [^()]*\)$/, "");
+        if (name !== item.name) {
+          item.setTrait("user", "name", name);
+        }
+      }
+    });
+  }
 
   function refreshLayerStatus() {
     return fetch(BACKEND_URL + "/map-layers/status.json")
@@ -1544,6 +1577,16 @@
       .then(function (data) {
         var rainArrived = !!(layerStatus && !layerStatus.rain_live && data.rain_live);
         layerStatus = data;
+        followAoiReach(data.aoi_reach);
+        // AOI change: the water-fee result follows the selected reach and is recomputed in the
+        // background; when it changes, load the layer again so the map shows the new one.
+        if (data.fees_version && data.fees_version !== feesVersion) {
+          var feesChanged = feesVersion !== null;
+          feesVersion = data.fees_version;
+          if (feesChanged && mapLayers.fees) {
+            reloadView();
+          }
+        }
         ui.feesLayer.disabled = !data.fees;
         ui.feesLayer.parentNode.title = data.fees ? "" : "Run the water-fee model first (Water-fee model panel).";
         if (!replayDate) {
@@ -2690,6 +2733,9 @@
     scheduleLive();
     refreshLayerStatus();
     setInterval(showReplayStages, 500);
+    // AOI change: every 15 s, check for another current reach (AOI layers) and a new
+    // water-fee result.
+    setInterval(refreshLayerStatus, 15000);
     setInterval(updateWater, 200);
     setInterval(updateSun, 250);
     window.requestAnimationFrame(animateWater);

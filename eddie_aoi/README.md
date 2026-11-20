@@ -21,6 +21,52 @@ against.
       resolver  (dataset -> variant)
 ```
 
+## Which area a dataset gets: the binding registry
+
+`eddie_aoi/resolver.py` holds `BINDINGS`, the **only** place in the project
+that decides a dataset's area. A module never carries its own table name,
+distance or km range; it calls
+
+```python
+from eddie_aoi.resolver import resolve
+result = resolve(conn, "building_population")   # the CURRENT reach
+result.geometry, result.reach_id, result.variant_key, result.degraded
+```
+
+Modules written against `eddie_base_data` call `eddie_base_data.query.resolve_aoi`
+instead, which wraps this and returns an `AoiScope`. To give a dataset another
+area, change its line in `BINDINGS` — nothing inside the module.
+
+| dataset | variant |
+|---|---|
+| `building_population`, `flood_costs` | `corridor(500)` — the same area, so people and damage stay comparable |
+| `landcover`, `buildings`, `addresses`, `dem_publish` | `corridor(300)` |
+| `water_gauges` | `buffer(1000)` |
+| `precipitation` | `watersheds` (until supplied: a 5 km buffer, marked degraded) |
+| `dem_build` | the envelope |
+
+An unregistered dataset is refused with the registered names listed, never
+given a default area.
+
+### The current reach
+
+`resolve` without a reach uses the **current reach**: the last selection that
+finished building (`aoi_current` table), or the configured fallback
+(`AOI_FALLBACK_REACH`, Alzette km 35–50) before any selection. It is shared by
+the whole deployment and survives restarts. `FOLLOWERS` in `resolver.py` lists
+the modules recomputed automatically when a selection becomes current.
+
+### Three roles of "the AOI" — keep them apart
+
+| role | what it is | where it comes from |
+|---|---|---|
+| **fetch envelope** | a rectangle around every bound variant of the reach, for sources that only accept bounds | `resolver.envelope` / the `dem_build` binding |
+| **clip mask** | what a dataset's stored rows are cut to | the dataset's binding |
+| **analysis domain** | the one area a statistic is measured over, reported with it | the dataset's binding (`Resolution.variant_key`) |
+
+**The envelope must never be used as an analysis domain** (or a clip mask): it
+is a rectangle, so a percentage over it is a percentage of arbitrary corners.
+
 ## The vendored routing
 
 `eddie_aoi/routing.py` contains a **byte-identical copy** of `select_route`

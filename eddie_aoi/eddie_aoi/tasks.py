@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 
+from celery import signals
 from eddie.tasks import app
 
 from eddie_aoi.builder import METHOD_MARKER_POLYLINE, build_reach
@@ -58,6 +59,9 @@ HQ_EXTREME_PATH_ENV = "AOI_HQ_EXTREME_PATH"
 #: transferring it is not. If it ever needs to be on by default, move it to a
 #: WMS layer so the rendering happens server-side.
 DISPLAY_VARIANTS = (
+    # The band the modules compute over (building_population, flood_costs - see
+    # eddie_aoi.resolver.BINDINGS), so the map shows the area the numbers describe.
+    ("corridor", {"half_width_m": 500.0}),
     ("corridor", {"half_width_m": 300.0}),
     ("buffer", {"d": 1000.0}),
     ("bbox", {"margin_m": 300.0}),
@@ -105,14 +109,41 @@ def default_method(sources: RiverSources) -> str:
     return METHOD_MARKER_POLYLINE
 
 
+def select_reach(reach_id: str) -> list[dict]:
+    """Make a built reach the current one and recompute the modules that follow it.
+
+    Only ever called after a successful build, so a refused or failed selection
+    never changes the current reach and never triggers a recompute. Returns what
+    was sent, for the build result.
+    """
+    from eddie_aoi.current import set_current
+    from eddie_aoi.resolver import FOLLOWERS
+
+    with get_engine().begin() as conn:
+        set_current(conn, reach_id)
+    log.info("Current reach is now %s; recomputing %s", reach_id, sorted(FOLLOWERS))
+
+    sent = []
+    for dataset, task_name in FOLLOWERS.items():
+        task = app.send_task(task_name)
+        sent.append({"dataset": dataset, "task": task_name, "task_id": task.id})
+    return sent
+
+
 @app.task(name="eddie_aoi.tasks.build_aoi_reach")
 def build_aoi_reach(
     river: str,
     km_start: float,
     km_end: float,
     pinned: bool = False,
+    select: bool = False,
 ) -> dict:
     """Build (or reuse) a reach and report what was produced.
+
+    ``select`` marks a user's selection (the REST endpoint and the WPS form pass
+    it): once the reach and its variants are built, it becomes the current reach
+    and the follower modules are recomputed for it. Internal builds - the
+    fallback at startup, a catalog request - leave the current reach alone.
 
     Returns a plain dict so the existing task-status route can hand it to the
     frontend unchanged.
@@ -159,7 +190,11 @@ def build_aoi_reach(
     provenance = reach.provenance
     log.info("AOI reach ready: %s (%s)", reach.reach_id, provenance.get("method"))
 
+    recomputations = select_reach(reach.reach_id) if select else []
+
     return {
+        "current": bool(select),
+        "recomputations": recomputations,
         "reach_id": reach.reach_id,
         "river": reach.river,
         "km_start": reach.km_start,
@@ -182,3 +217,16 @@ def ensure_fallback_reach() -> dict:
     """
     spec = fallback_reach_spec()
     return build_aoi_reach(spec.river, spec.km_start, spec.km_end, pinned=True)
+
+
+@signals.worker_ready.connect
+def _ensure_fallback_at_startup(sender=None, **_kwargs) -> None:
+    """Build and pin the fallback reach whenever the worker starts (task 10.3a).
+
+    Hooked here, in the plugin, rather than in the project's own startup hook
+    (src/eddie_antartica/tasks.py): that file is baked into the 30 GB image, so
+    changing it needs a rebuild, whereas this plugin is bind-mounted. Celery runs
+    every connected worker_ready handler, so the project's own hook (EDDIE's
+    static ingest, still reading selected_polygon.geojson - task 10.3b) runs too.
+    """
+    ensure_fallback_reach.delay()

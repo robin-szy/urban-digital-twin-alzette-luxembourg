@@ -35,6 +35,9 @@ PAYLOAD_WARN_BYTES = 512 * 1024
 
 PUBLISH_SRID = int(PUBLISH_CRS.split(":")[1])
 
+#: The corridor the modules compute over; shown on the map by default.
+MODULE_CORRIDOR_KEY = "corridor_500"
+
 
 def _feature(geometry_geojson: str, properties: dict) -> dict:
     return {
@@ -168,19 +171,16 @@ def variants_geojson(
 #: is drawn in a warning colour.
 VARIANT_STYLES = {
     "centerline": {"stroke": "#1f78b4", "stroke-width": 3, "fill-opacity": 0},
-    "corridor": {"stroke": "#33a02c", "stroke-width": 2, "fill": "#33a02c",
-                 "fill-opacity": 0.12},
-    "buffer": {"stroke": "#6a3d9a", "stroke-width": 2, "fill": "#6a3d9a",
-               "fill-opacity": 0.08},
+    # AOI outlines only, no fill: a tinted area over the map was unwanted (2026-11-20).
+    "corridor": {"stroke": "#33a02c", "stroke-width": 2, "fill-opacity": 0},
+    "buffer": {"stroke": "#6a3d9a", "stroke-width": 2, "fill-opacity": 0},
     "bbox": {"stroke": "#999999", "stroke-width": 1, "fill-opacity": 0},
-    "watersheds": {"stroke": "#ff7f00", "stroke-width": 2, "fill": "#ff7f00",
-                   "fill-opacity": 0.10},
+    "watersheds": {"stroke": "#ff7f00", "stroke-width": 2, "fill-opacity": 0},
     # Actual data clipped to the AOI, so it is filled rather than outlined.
     "hq100": {"stroke": "#1f6fb4", "stroke-width": 1, "fill": "#2b8cbe",
               "fill-opacity": 0.55},
 }
-DEGRADED_STYLE = {"stroke": "#e31a1c", "stroke-width": 2, "fill": "#e31a1c",
-                  "fill-opacity": 0.10}
+DEGRADED_STYLE = {"stroke": "#e31a1c", "stroke-width": 2, "fill-opacity": 0}
 
 HUMAN_NAMES = {
     "centerline": "River centerline",
@@ -192,12 +192,16 @@ HUMAN_NAMES = {
 }
 
 
-def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict | None:
+def catalog_fragment(
+    conn: sa.Connection, reach_id: str, base_url: str, *, is_fallback: bool = False
+) -> dict | None:
     """A Terria catalog fragment showing one reach's AOI.
 
     One item per variant, so each can be styled and toggled on its own. A
     degraded variant is named and described as a substitute, because a
     viewer who cannot see that will read it as the area they asked for.
+    ``is_fallback`` marks the configured fallback served because nothing has
+    been selected yet, so the client can say so.
     """
     cached_reach = read_cached(conn, reach_id)
     if cached_reach is None:
@@ -231,6 +235,15 @@ def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict 
         }
     ]
 
+    # Exactly one corridor is on by default: the band the modules compute over
+    # (corridor_500, eddie_aoi.resolver.BINDINGS), so the map frames the area the
+    # numbers describe. Reaches built before it existed show their first corridor.
+    corridor_keys = [row.variant_key for row in rows if row.requested_variant == "corridor"]
+    shown_corridor = (
+        MODULE_CORRIDOR_KEY if MODULE_CORRIDOR_KEY in corridor_keys
+        else (corridor_keys[0] if corridor_keys else None)
+    )
+
     any_degraded = False
     for row in rows:
         degraded = bool(row.degraded)
@@ -252,7 +265,7 @@ def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict 
             "style": DEGRADED_STYLE if degraded else VARIANT_STYLES.get(
                 row.variant, VARIANT_STYLES["corridor"]
             ),
-            "show": requested == "corridor",
+            "show": row.variant_key == shown_corridor,
         }
         if degraded:
             member["description"] = (
@@ -276,56 +289,89 @@ def catalog_fragment(conn: sa.Connection, reach_id: str, base_url: str) -> dict 
         "isOpen": True,
         "members": members,
     }
+    notes = []
+    if is_fallback:
+        group["name"] += " (default - no reach selected yet)"
+        notes.append(
+            "No reach has been selected yet, so this is the configured default "
+            "area. Select a reach to replace it; the twin then shows and computes "
+            "for your selection."
+        )
     if any_degraded:
-        group["description"] = (
+        notes.append(
             "One or more AOI variants are substitutes because their source "
             "layer has not been supplied. Items marked SUBSTITUTE are not the "
             "area that was requested."
         )
+    if notes:
+        group["description"] = "\n\n".join(notes)
 
     return {"catalog": [group], "workbench": on_by_default}
 
 
-def catalog_fragment_all(conn: sa.Connection, base_url: str, limit: int = 50) -> dict:
-    """A Terria catalog fragment with one group per cached reach.
+def catalog_fragment_all(conn: sa.Connection, base_url: str) -> dict:
+    """The "AOI browser": switch between built reaches, and show the CURRENT one's variants.
 
-    Lets a viewer browse every area of interest that has been built, rather
-    than only the one the selector last produced. Nothing is on the workbench
-    by default - opening five reaches at once would be noise.
+    Two parts:
+
+    * a form ("Switch to a built AOI", WPS process ``select_built_reach``) with a
+      dropdown of every reach already in the cache; running it makes that reach
+      the current one, exactly like a new selection (the modules recompute);
+    * one layer per AOI variant (centerline, corridors, buffer, watersheds, ...),
+      always for the current reach: the URLs name no reach
+      (``/aoi/current/variants.geojson``), so the server answers for whatever is
+      current when the layer is fetched.
+
+    Kept at this URL (all.json) because the running Terria image's catalog.json
+    points its "AOI browser" entry here, so no image rebuild is needed.
     """
-    from eddie_aoi.db import reach_cache
+    from eddie_aoi.current import current_reach
 
-    rows = conn.execute(
-        sa.select(reach_cache.c.reach_id)
-        .where(reach_cache.c.status == "ready")
-        .order_by(reach_cache.c.last_used_at.desc())
-        .limit(limit)
-    ).scalars().all()
+    base = base_url.rstrip("/")
+    current = current_reach(conn)
+    fragment = catalog_fragment(conn, current.reach_id, base_url)
 
-    groups = []
-    for reach_id in rows:
-        fragment = catalog_fragment(conn, reach_id, base_url)
-        if fragment is None:
-            continue
-        group = fragment["catalog"][0]
-        # Off by default: this is a browser, not a default view.
-        for member in group["members"]:
-            member["show"] = False
-        group["isOpen"] = False
-        groups.append(group)
+    switch = {
+        "id": "aoi-switch",
+        "type": "wps",
+        "name": "Switch to a built AOI",
+        "url": f"{base}/aoi/wps",
+        "identifier": "select_built_reach",
+        "description": (
+            "Pick one of the reaches already built (cached) and run: it becomes the "
+            "twin's current reach and the modules recompute for it (about a minute). "
+            "To build a new reach, use the AOI selector. A reach built in this browser "
+            "session appears in the list after a page reload."
+        ),
+    }
+
+    layers = []
+    for member in (fragment or {"catalog": [{"members": []}]})["catalog"][0]["members"]:
+        variant_key = member["url"].rsplit("variant_key=", 1)[-1]
+        layer = dict(member)
+        layer["id"] = f"aoi-browse-{variant_key}"
+        # The centerline's name carries the km range of one reach; this layer follows
+        # whatever is current, so it gets a name without it.
+        if variant_key == "centerline":
+            layer["name"] = HUMAN_NAMES["centerline"]
+        layer["url"] = f"{base}/aoi/current/variants.geojson?variant_key={variant_key}"
+        layer["show"] = False
+        layers.append(layer)
 
     return {
         "catalog": [
+            switch,
             {
                 "type": "group",
-                "name": f"Areas of interest ({len(groups)} built)",
+                "name": "AOI layers of the current reach",
                 "description": (
-                    "Every reach built so far. Expand one and tick its layers. "
-                    "'HQ100 flood zone' is real flood data cut to that AOI; the "
-                    "others are the AOI outlines themselves."
+                    "Tick a layer to see that AOI variant for the current reach. "
+                    "'HQ100 flood zone' is real flood data cut to the reach; the "
+                    "others are AOI outlines. After switching reach, untick and tick "
+                    "a layer (or reload) to redraw it for the new reach."
                 ),
                 "isOpen": True,
-                "members": groups,
-            }
+                "members": layers,
+            },
         ]
     }

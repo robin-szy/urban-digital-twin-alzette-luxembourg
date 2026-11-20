@@ -185,19 +185,48 @@ The system SHALL have a fallback reach supplied by configuration rather than har
 - **WHEN** the configured fallback reach fails validation at startup
 - **THEN** startup fails with the validation reason rather than falling back to an unvalidated area
 
+### Requirement: The current reach is the last successfully built selection
+
+The system SHALL persist, for the whole deployment, the most recent selection whose reach finished building successfully as the current reach. Where no selection has succeeded, the configured fallback reach SHALL be the current reach. Consumers that resolve an AOI without naming a reach SHALL receive the current reach.
+
+#### Scenario: A built selection becomes current
+
+- **WHEN** a selected reach finishes building successfully
+- **THEN** it becomes the current reach
+
+#### Scenario: A failed selection does not replace the current reach
+
+- **WHEN** a selected reach is refused or fails to build
+- **THEN** the current reach is unchanged
+
+#### Scenario: The current reach survives a restart
+
+- **WHEN** the deployment restarts after a reach was selected
+- **THEN** the last successfully built selection is still the current reach
+
+#### Scenario: No selection yet
+
+- **WHEN** no selection has ever succeeded in the deployment
+- **THEN** the configured fallback reach is the current reach and is reported as the fallback
+
 ### Requirement: Unused reaches can be evicted
 
-The system SHALL support removing cached reaches and their derived AOI polygons based on how recently they were used. Eviction SHALL NOT remove a pinned reach, nor a reach that derived data still references.
+The system SHALL support removing cached reaches, their derived AOI polygons and the derived dataset rows computed for them, based on how recently they were used. Eviction SHALL NOT remove a pinned reach nor the current reach, and SHALL NOT remove the derived rows of either.
 
 #### Scenario: Eviction of an unused reach
 
 - **WHEN** eviction runs for reaches unused beyond the requested age
 - **THEN** those reaches and their derived AOI polygons are removed and the removed identifiers are reported
 
-#### Scenario: Reach still referenced by derived data
+#### Scenario: Derived data of an evicted reach is removed with it
 
-- **WHEN** eviction would remove a reach that derived data rows still reference
-- **THEN** that reach is retained and reported as retained with the reason
+- **WHEN** eviction removes a reach for which derived dataset rows exist
+- **THEN** those rows are removed in the same operation and the report names each table and how many rows were removed from it
+
+#### Scenario: Eviction cannot remove the current reach
+
+- **WHEN** cache eviction runs and the current reach is unused beyond the requested age
+- **THEN** the current reach and its derived rows are retained and reported as retained with the reason
 
 #### Scenario: Eviction is explicitly invoked
 

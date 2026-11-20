@@ -97,6 +97,33 @@ aoi_variant_cache = sa.Table(
 )
 
 
+#: The current reach: the last selection that finished building, shared by the
+#: whole deployment. One row at most (the CHECK pins the key to 1); no row means
+#: no selection has succeeded yet and the configured fallback is current.
+#:
+#: ON DELETE RESTRICT makes "the current reach is never evicted" hold in the
+#: database itself, not only in the eviction code: deleting the current reach
+#: from reach_cache fails.
+aoi_current = sa.Table(
+    "aoi_current",
+    metadata,
+    sa.Column("id", sa.SmallInteger, primary_key=True, server_default=sa.text("1")),
+    sa.Column(
+        "reach_id",
+        sa.Text,
+        sa.ForeignKey("reach_cache.reach_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    sa.Column(
+        "selected_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint("id = 1", name="aoi_current_single_row"),
+)
+
+
 def database_url() -> str:
     """Connection URL from the EDDIE PostGIS environment variables."""
     host = os.environ.get("POSTGRES_HOST", "localhost")

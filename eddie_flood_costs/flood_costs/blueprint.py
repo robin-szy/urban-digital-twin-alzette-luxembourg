@@ -33,12 +33,33 @@ def _engine():
     return get_database()
 
 
+def _require_current_reach(conn):
+    """AOI change (Robin, 2026-11-20): only serve damage computed for the twin's CURRENT reach.
+
+    The loaded result belongs to the run that wrote it (its rows in flood_cost_buildings carry
+    the reach). When the user has selected another reach, these figures describe a different
+    stretch of river, so they are reported as unavailable instead of shown as if they applied.
+    """
+    from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+    from eddie_aoi.current import current_reach  # pylint: disable=import-outside-toplevel
+
+    computed_for = conn.execute(text(
+        "SELECT DISTINCT b.reach_id FROM flood_cost_buildings b "
+        "JOIN flood_cost_lookup l ON l.run_id = b.run_id")).scalars().all()
+    current = current_reach(conn).reach_id
+    if computed_for != [current]:
+        raise LookupValidationError(
+            f"The loaded flood costs were computed for {computed_for}, not for the current reach "
+            f"{current}; they are not shown for it.")
+
+
 def _lookup_from_database() -> CostLookup:
     """The result loaded by tasks.load_flood_costs_to_db, used when no lookup file is configured."""
     try:
         from sqlalchemy import text  # pylint: disable=import-outside-toplevel
         with _engine().connect() as conn:
             version = conn.execute(text("SELECT dataset_version FROM flood_cost_lookup")).scalar_one()
+            _require_current_reach(conn)
         return _load_db_snapshot(version)
     except LookupValidationError:
         raise

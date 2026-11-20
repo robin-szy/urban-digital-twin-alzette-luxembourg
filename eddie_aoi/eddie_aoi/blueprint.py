@@ -73,19 +73,21 @@ def _wps_service():
     instead keeps it self-contained and live-reloadable through the existing
     bind mount.
     """
-    global _SERVICE
-    if _SERVICE is None:
-        # Imported lazily: pywps reads its config at import time, and a
-        # deployment without it should not break the rest of the blueprint.
-        from pywps import Service
+    global _BUILD_PROCESS
+    # Imported lazily: pywps reads its config at import time, and a
+    # deployment without it should not break the rest of the blueprint.
+    from pywps import Service
 
-        from eddie_aoi.wps import BuildAoiReach
+    from eddie_aoi.wps import BuildAoiReach, SelectBuiltReach
 
-        _SERVICE = Service([BuildAoiReach()], [WPS_CONFIG])
-    return _SERVICE
+    if _BUILD_PROCESS is None:
+        _BUILD_PROCESS = BuildAoiReach()
+    # SelectBuiltReach is created per request: its dropdown lists the reaches in the
+    # cache NOW, so a reach built a minute ago is offered (one small query).
+    return Service([_BUILD_PROCESS, SelectBuiltReach()], [WPS_CONFIG])
 
 
-_SERVICE = None
+_BUILD_PROCESS = None
 
 #: PyWPS configuration, as the app already ships it.
 WPS_CONFIG = "src/pywps.cfg"
@@ -144,7 +146,8 @@ def submit_reach():
     except PreparationError as exc:
         return _bad_request(str(exc), available_rivers=rivers)
 
-    task = build_aoi_reach.delay(river, float(km_start), float(km_end))
+    # select=True: once built, it becomes the current reach and the modules recompute.
+    task = build_aoi_reach.delay(river, float(km_start), float(km_end), select=True)
     return (
         jsonify(
             {
@@ -286,6 +289,21 @@ def reach_variants_geojson(reach_id):
     return jsonify(collection)
 
 
+@blueprint.route("/aoi/current/variants.geojson", methods=["GET"])
+def current_variants_geojson():
+    """The CURRENT reach's AOI as GeoJSON; same ``?variant_key=`` as the per-reach route.
+
+    For the AOI browser's layers, which must always show the current reach: the
+    reach is decided here, server-side, each time the layer is fetched.
+    """
+    from eddie_aoi.current import current_reach
+    from eddie_aoi.db import get_engine
+
+    with get_engine().connect() as conn:
+        reach_id = current_reach(conn).reach_id
+    return reach_variants_geojson(reach_id)
+
+
 @blueprint.route("/terria-aoi-init/<reach_id>.json", methods=["GET"])
 def terria_aoi_init(reach_id):
     """Terria catalog fragment showing one reach's AOI.
@@ -320,6 +338,16 @@ def terria_aoi_init_all():
 
 
 @blueprint.route("/terria-aoi-init/fallback.json", methods=["GET"])
+def terria_aoi_init_fallback_route():
+    """Kept for Terria images built before current.json: serves the CURRENT reach.
+
+    The running map's client_config still asks for fallback.json at startup. Serving the
+    current reach here means reopening the map shows the last selection without
+    rebuilding the Terria image; client_config now names current.json for the next build.
+    """
+    return terria_aoi_init_current()
+
+
 def terria_aoi_init_fallback():
     """Terria catalog fragment for the CONFIGURED fallback reach.
 
@@ -364,10 +392,80 @@ def terria_aoi_init_fallback():
             return jsonify(_empty_catalog(f"AOI unavailable: {exc}"))
 
     with get_engine().connect() as conn:
-        fragment = catalog_fragment(conn, reach_id, base_url)
+        # Flagged as the fallback only while nothing has been selected: once a
+        # selection exists, this reach is just one of the cached ones.
+        from eddie_aoi.current import current_reach
+
+        fragment = catalog_fragment(
+            conn, reach_id, base_url, is_fallback=current_reach(conn).is_fallback
+        )
 
     if fragment is None:
         return jsonify(_empty_catalog("AOI unavailable: the reach could not be read."))
+    return jsonify(fragment)
+
+
+@blueprint.route("/aoi/evict", methods=["POST"])
+def evict_reaches():
+    """Remove reaches unused for longer than an age, with their AOI polygons and derived rows.
+
+    JSON: {"older_than_days": 30}. The age is required - there is no default, so an
+    empty request removes nothing. The pinned fallback and the current reach are
+    never removed. Nothing calls this on a schedule: eviction happens only here.
+    """
+    from datetime import timedelta
+
+    from eddie_aoi.db import get_engine
+    from eddie_aoi.eviction import evict
+
+    payload = request.get_json(silent=True) or {}
+    days = payload.get("older_than_days")
+    try:
+        days = float(days)
+    except (TypeError, ValueError):
+        return _bad_request("Provide 'older_than_days' as a positive number.",
+                            example={"older_than_days": 30})
+    if not days > 0:
+        return _bad_request("'older_than_days' must be positive.")
+
+    with get_engine().begin() as conn:
+        report = evict(conn, timedelta(days=days))
+    log.info("AOI eviction (older than %s days): removed %s, retained %s",
+             days, [r["reach_id"] for r in report["removed"]],
+             [r["reach_id"] for r in report["retained"]])
+    return jsonify({"status": "ok", **report})
+
+
+@blueprint.route("/terria-aoi-init/current.json", methods=["GET"])
+def terria_aoi_init_current():
+    """Terria catalog fragment for the CURRENT reach - the map's startup entry.
+
+    The current reach is the last selection that finished building, so reopening
+    the map shows what was last selected. Before any selection it is the
+    configured fallback, and the fragment says so. Like fallback.json, it always
+    returns a valid catalog: Terria loads this at startup.
+    """
+    from eddie_aoi.current import current_reach
+    from eddie_aoi.db import get_engine
+    from eddie_aoi.publish import catalog_fragment
+
+    base_url = request.args.get("base_url") or request.host_url.rstrip("/")
+
+    try:
+        with get_engine().connect() as conn:
+            current = current_reach(conn)
+    except Exception as exc:  # an invalid configured fallback, say
+        log.error("Could not determine the current reach: %s", exc)
+        return jsonify(_empty_catalog(f"AOI unavailable: {exc}"))
+
+    if current.is_fallback:
+        # Same as the fallback route, including building it on first use.
+        return terria_aoi_init_fallback()
+
+    with get_engine().connect() as conn:
+        fragment = catalog_fragment(conn, current.reach_id, base_url)
+    if fragment is None:
+        return jsonify(_empty_catalog("AOI unavailable: the current reach could not be read."))
     return jsonify(fragment)
 
 

@@ -137,7 +137,8 @@ class BuildAoiReach(Process):
                 "aoi",
                 "Area of interest",
                 abstract=(
-                    "The reach centerline and its AOI variants. Each feature "
+                    "The reach centerline and the 500 m corridor the modules "
+                    "compute over. Each feature "
                     "carries its provenance, including whether it is a "
                     "substitute for a variant whose source is unavailable."
                 ),
@@ -214,7 +215,7 @@ class BuildAoiReach(Process):
 
     def _handler(self, request, response):
         from eddie_aoi.db import get_engine
-        from eddie_aoi.publish import variants_geojson
+        from eddie_aoi.publish import MODULE_CORRIDOR_KEY, variants_geojson
         from eddie_aoi.reach import reach_id as make_reach_id
         from eddie_aoi.tasks import build_aoi_reach
 
@@ -228,7 +229,8 @@ class BuildAoiReach(Process):
 
         # Validation happens inside build_aoi_reach via validate_bounds, so a
         # bad range raises before anything is written.
-        result = build_aoi_reach(river, km_start, km_end)
+        # select=True: once built, it becomes the current reach and the modules recompute.
+        result = build_aoi_reach(river, km_start, km_end, select=True)
         reach_id = result["reach_id"]
 
         response.update_status("Collecting the AOI geometry", 70)
@@ -257,8 +259,14 @@ class BuildAoiReach(Process):
                 + " - any figure measured over those is measured over the substitute."
             )
 
+        # Only the centerline and the corridor the modules compute over go on the map.
+        # Terria draws this output with its own default colours, and the full collection
+        # includes the 5 km watershed substitute - a large tinted area around everything.
+        # Every variant stays in the AOI catalog group, off by default.
+        with get_engine().connect() as conn:
+            shown = variants_geojson(conn, reach_id, MODULE_CORRIDOR_KEY, include_centerline=True)
         response.outputs["aoi"].data_format = GEOJSON_FORMAT
-        response.outputs["aoi"].data = json.dumps(collection)
+        response.outputs["aoi"].data = json.dumps(shown)
 
         # A mappable catalog member, so Terria draws the result immediately
         # rather than only after the page is reloaded. It references the
@@ -271,13 +279,8 @@ class BuildAoiReach(Process):
                 "type": "geojson",
                 "name": f"AOI corridor - {river} km {km_start}-{km_end}",
                 "url": f"{base}/aoi/reach/{reach_id}/variants.geojson"
-                f"?variant_key=corridor_300",
-                "style": {
-                    "stroke": "#33a02c",
-                    "stroke-width": 2,
-                    "fill": "#33a02c",
-                    "fill-opacity": 0.12,
-                },
+                f"?variant_key=corridor_500",  # the band the modules compute over
+                "style": {"stroke": "#33a02c", "stroke-width": 2, "fill-opacity": 0},  # outline only
                 "description": summary,
             }
         )
@@ -286,4 +289,126 @@ class BuildAoiReach(Process):
         response.outputs["catalog_url"].data = f"/terria-aoi-init/{reach_id}.json"
 
         response.update_status("Area of interest ready", 100)
+        return response
+
+
+def _reach_label(river: str, km_start: float, km_end: float, reach_id: str) -> str:
+    """Dropdown text for a built reach; the id in brackets is what the handler reads back."""
+    return f"{river} km {float(km_start):g}-{float(km_end):g} [{reach_id}]"
+
+
+def _built_reaches() -> tuple[list[str], str | None]:
+    """Labels of every ready reach in the cache (most recently used first), and the current one."""
+    import sqlalchemy as sa
+
+    from eddie_aoi.current import current_reach
+    from eddie_aoi.db import get_engine, reach_cache
+
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            sa.select(reach_cache.c.reach_id, reach_cache.c.river,
+                      reach_cache.c.km_start, reach_cache.c.km_end)
+            .where(reach_cache.c.status == "ready")
+            .order_by(reach_cache.c.last_used_at.desc())
+        ).all()
+        current = current_reach(conn).reach_id
+    labels = [_reach_label(r.river, r.km_start, r.km_end, r.reach_id) for r in rows]
+    default = next((label for label, r in zip(labels, rows) if r.reach_id == current), None)
+    return labels, default
+
+
+class SelectBuiltReach(Process):
+    """Make an already built (cached) reach the twin's current reach.
+
+    The "switch" counterpart of BuildAoiReach: nothing is built, the reach comes
+    from the cache, and the same follow-up happens as after a new selection
+    (eddie_aoi.tasks.select_reach: set current + recompute the FOLLOWERS).
+    The dropdown is read when the process is described, so blueprint._wps_service
+    creates this process per request.
+    """
+
+    def __init__(self):
+        try:
+            labels, default = _built_reaches()
+        except Exception as exc:  # database down: still describe the process
+            log.warning("Could not list built reaches for the WPS form: %s", exc)
+            labels, default = [], None
+
+        inputs = [
+            LiteralInput(
+                "reach",
+                "Built reach",
+                data_type="string",
+                abstract="A reach that has already been built. It becomes the current reach.",
+                default=default or (labels[0] if labels else ""),
+                allowed_values=labels or AnyValue(),
+                min_occurs=1,
+                max_occurs=1,
+            )
+        ]
+        outputs = [
+            ComplexOutput(
+                "layer",
+                "Area of interest layer",
+                abstract="The reach's 500 m corridor, drawn as soon as the switch is done.",
+                supported_formats=[TERRIA_MEMBER_FORMAT],
+                as_reference=False,
+            ),
+            LiteralOutput("reach_id", "Reach identifier", data_type="string"),
+            LiteralOutput("summary", "Summary", data_type="string"),
+        ]
+        super().__init__(
+            self._handler,
+            identifier="select_built_reach",
+            title="Switch to a built area of interest",
+            abstract=(
+                "Make one of the already built reaches the current reach of the twin. "
+                "The modules that follow the reach recompute for it."
+            ),
+            inputs=inputs,
+            outputs=outputs,
+            version="1.0.0",
+            # Synchronous, for the same reason as BuildAoiReach (see there).
+            store_supported=False,
+            status_supported=False,
+        )
+
+    def _handler(self, request, response):
+        from eddie_aoi.db import get_engine
+        from eddie_aoi.errors import PreparationError
+        from eddie_aoi.store import read_cached
+        from eddie_aoi.tasks import select_reach
+
+        text = request.inputs["reach"][0].data.strip()
+        # Accept either the dropdown label "... [reach_id]" or a bare reach id.
+        reach_id = text[text.rfind("[") + 1:text.rfind("]")] if text.endswith("]") else text
+
+        with get_engine().connect() as conn:
+            cached = read_cached(conn, reach_id)
+        if cached is None or not cached.is_ready:
+            raise PreparationError(
+                f"{reach_id} is not a built reach. Build it with the AOI selector first."
+            )
+
+        sent = select_reach(reach_id)  # sets the current reach, sends the recomputations
+        label = _reach_label(cached.river, cached.km_start, cached.km_end, reach_id)
+        summary = (
+            f"{label} is now the current reach. Recomputing: "
+            + ", ".join(s["dataset"] for s in sent)
+            + " (about a minute; then untick and tick a result layer to redraw it)."
+        )
+
+        base = _backend_base_url()
+        response.outputs["layer"].data_format = TERRIA_MEMBER_FORMAT
+        response.outputs["layer"].data = json.dumps(
+            {
+                "type": "geojson",
+                "name": f"AOI corridor - {cached.river} km {float(cached.km_start):g}-{float(cached.km_end):g}",
+                "url": f"{base}/aoi/reach/{reach_id}/variants.geojson?variant_key=corridor_500",
+                "style": {"stroke": "#33a02c", "stroke-width": 2, "fill-opacity": 0},
+                "description": summary,
+            }
+        )
+        response.outputs["reach_id"].data = reach_id
+        response.outputs["summary"].data = summary
         return response

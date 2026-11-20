@@ -282,3 +282,39 @@ def test_cached_variant_converts_to_the_provider_frame_shape(conn, reach):
     assert frame.crs.to_epsg() == 2169
     for column in ("variant", "variant_key", "params", "reach_id", "degraded"):
         assert column in frame.columns
+
+
+# --- 6.6 the watershed fallback is a generous buffer -------------------------
+
+
+def test_watershed_substitute_is_the_5000_m_buffer(conn, reach):
+    cached = get_or_build_variant(conn, reach, default_registry(), "watersheds")
+
+    assert cached.degraded is True
+    assert cached.variant == "buffer"
+    assert cached.params == {"d": 5000.0}
+
+
+def test_a_substitute_built_under_an_older_fallback_is_rebuilt(conn, reach):
+    # Simulate the entry cached before the change: the same "watersheds" key,
+    # but built from buffer(1000).
+    old_registry = default_registry()
+    old_registry.set_fallback("watersheds", "buffer", d=1000.0)
+    old = get_or_build_variant(conn, reach, old_registry, "watersheds")
+    assert old.params == {"d": 1000.0}
+
+    rebuilt = get_or_build_variant(conn, reach, default_registry(), "watersheds")
+
+    assert rebuilt.params == {"d": 5000.0}
+    assert rebuilt.geometry.area > old.geometry.area
+
+
+def test_an_unchanged_substitute_is_served_from_cache(conn, reach, monkeypatch):
+    registry = default_registry()
+    get_or_build_variant(conn, reach, registry, "watersheds")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("should have been a cache hit")
+
+    monkeypatch.setattr(registry, "resolve_variant", fail)
+    assert get_or_build_variant(conn, reach, registry, "watersheds").params == {"d": 5000.0}

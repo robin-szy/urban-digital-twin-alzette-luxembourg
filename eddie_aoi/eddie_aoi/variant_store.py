@@ -166,6 +166,15 @@ def touch_variant(conn: sa.Connection, reach_id: str, key: str) -> None:
     )
 
 
+def _same_params(stored: dict | None, declared: dict) -> bool:
+    """Whether stored parameters match declared ones, ignoring float formatting.
+
+    Compared through variant_key's rendering, so 5000 and 5000.0 are equal.
+    """
+    stored = stored or {}
+    return variant_key("x", stored) == variant_key("x", declared)
+
+
 def is_variant_stale(
     cached: CachedVariant,
     registry: VariantRegistry,
@@ -184,6 +193,17 @@ def is_variant_stale(
         provider = registry.providers.get(cached.requested_variant)
         if provider is not None and provider.availability().available:
             return True
+        # The entry is keyed on the REQUESTED variant (e.g. "watersheds"), so a
+        # change to the declared substitute - another variant, or the same one
+        # with other parameters (buffer 1000 m -> 5000 m) - would otherwise keep
+        # serving the old substitute forever.
+        declared = registry.fallbacks.get(cached.requested_variant)
+        if declared is not None:
+            fallback_name, fallback_params = declared
+            if cached.variant != fallback_name or not _same_params(
+                cached.params, fallback_params
+            ):
+                return True
 
     if current_source_sha256 is None or cached.source_sha256 is None:
         return False

@@ -25,6 +25,11 @@ The AOI used for each dataset SHALL be declared in a single registry of dataset-
 - **WHEN** a dataset needs a different AOI
 - **THEN** the change is made in the registry binding and requires no edit inside that dataset's processing code
 
+#### Scenario: Resolving without a named reach
+
+- **WHEN** a dataset's AOI is resolved without naming a reach
+- **THEN** it is resolved for the current reach, and the result reports which reach that was and whether it is the fallback
+
 ### Requirement: Resolution reports what was actually used
 
 Resolving a dataset's AOI SHALL return the geometry together with the reach, the variant requested, the variant actually used, whether the result is degraded, and the reason for any degradation.
@@ -123,6 +128,49 @@ Every derived dataset row SHALL record the reach and variant it was computed ove
 
 - **WHEN** derived data exists without a reach attribution
 - **THEN** it is not served as belonging to the current reach until it has been attributed
+
+### Requirement: Published layers show the current reach
+
+A published derived layer SHALL show only the rows computed for the current reach and that dataset's bound variant. Rows computed for other reaches or variants SHALL remain stored but SHALL NOT be shown in the published layer.
+
+#### Scenario: Switching reach
+
+- **WHEN** a different reach becomes current and the dataset has been recomputed for it
+- **THEN** the published layer shows the new reach's rows and the previous reach's rows are still stored
+
+#### Scenario: Overlapping reaches
+
+- **WHEN** rows exist for two reaches that overlap
+- **THEN** the published layer shows each feature once, from the current reach only
+
+#### Scenario: Superseded variant for the same reach
+
+- **WHEN** rows exist for the current reach under a variant that is no longer the dataset's binding
+- **THEN** those rows are not shown in the published layer
+
+### Requirement: A module reports the part of the reach it covers
+
+A dataset whose method only applies within a limited range — such as depths interpolated between gauges, or damage computed only for buildings with a reviewed type — SHALL report which part of the current reach its results cover. Results outside that coverage SHALL be reported as not covered or unknown, SHALL NOT be shown as zero, and totals over a partly covered reach SHALL be labelled partial.
+
+#### Scenario: Reach beyond gauge coverage
+
+- **WHEN** the current reach extends beyond the kilometre range within which flood depths can be computed
+- **THEN** results are computed for the covered part only, and the published layer and totals state the covered range and that the rest is not covered
+
+#### Scenario: Buildings without a reviewed type
+
+- **WHEN** buildings inside the reach have no reviewed building type
+- **THEN** their damage is reported as unknown, the totals report how many buildings are unknown, and no building type is assigned to them by code
+
+#### Scenario: Reach beyond the terrain
+
+- **WHEN** the current reach extends beyond the area the served elevation model covers
+- **THEN** results that depend on terrain are reported as not covered for that part, rather than computed over missing terrain or shown as zero
+
+#### Scenario: Reach fully covered
+
+- **WHEN** the current reach lies entirely within a module's coverage
+- **THEN** no partial-coverage label is shown
 
 ### Requirement: Cache reuse checks match the reach
 
