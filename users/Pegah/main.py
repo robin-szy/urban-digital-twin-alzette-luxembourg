@@ -6,12 +6,20 @@ from src.population_model import calculate_population_and_heights
 from src.osm_categorizer import enrich_with_osm_industrial_data
 
 from src.simple_model_first_scenario import non_residential_water_allocation
+from src.timeseries_model_first_scenario import period_fees
 from src.simple_model_second_scenario import process_rainwater_impact
 from src.simple_model_third_scenario import process_buildings_flood_risk
 from src.simple_model_fourth_scenario import process_water_quality_charge
 from src.simple_model_fifth_scenario import process_building_population_water_consumption
 
 from src.exporters import export_results
+
+# Raw inputs under data/raw/ (paths relative to the project root, as in config.py).
+KILOMETRAGE_PATH = "data/raw/River_kilometers/kilometrage-des-cours-deau.gpkg"
+BUILDINGS_PATH = "data/raw/Buildings/ACT2023v2_Buildings3d_Footprints.gpkg"
+COMMUNE_PATH = "data/raw/Population/LIMADM_COMMUNES.shp"
+POPULATION_PATH = "data/raw/Population/rnpp_population_per_municipality.csv"
+HEIGHT_GPKG_PATH = "data/raw/Population/LU00.gpkg"
 
 def main():
     # Ensure outputs directory exists
@@ -20,20 +28,20 @@ def main():
     print("Step 1: Generating AOI and filtering buildings...")
     aoi_gdf, filtered_buildings = generate_aoi_and_filter_buildings(
         config=config,
-        data_path="data/kilometrage-des-cours-deau.gpkg",
+        data_path=KILOMETRAGE_PATH,
         # The 2023 register footprints are the single building source: the same
         # layer the digital twin displays, carrying buildingid, commune, lau2,
         # area and zmin.
-        buildings_path="data/ACT2023v2_Buildings3d_Footprints.gpkg",
+        buildings_path=BUILDINGS_PATH,
         output_gpkg_path="outputs/alzette_aoi_buildings.gpkg"
     )
     
     print("Step 2: Processing heights, volumes, and population...")
     buildings_joined = calculate_population_and_heights(
         buildings_path="outputs/alzette_aoi_buildings.gpkg",
-        commune_path="data/LIMADM_COMMUNES.shp",
-        population_path="data/rnpp_population_per_municipality.csv",
-        height_gpkg_path="data/LU00.gpkg",
+        commune_path=COMMUNE_PATH,
+        population_path=POPULATION_PATH,
+        height_gpkg_path=HEIGHT_GPKG_PATH,
         target_crs=config.TARGET_CRS
     )
     
@@ -50,6 +58,28 @@ def main():
         unit_price=7.0
     )
     
+    print("Step 3 (Scenario 1, 15-minute): Gauge-driven volume, tariff and fee per building...")
+    # Window: GAUGE_START / GAUGE_END (ISO 8601, UTC), else the last 7 days.
+    # GAUGE_READINGS_JSON points at saved readings, to run the pipeline without the API.
+    tariff_series, fees_15min, _, gauge_areas = period_fees(
+        buildings_joined,
+        start=os.environ.get("GAUGE_START"),
+        end=os.environ.get("GAUGE_END"),
+        readings_json=os.environ.get("GAUGE_READINGS_JSON") or None,
+        percentage=0.10,
+        unit_price=7.0
+    )
+    # period_fees keeps the row order of buildings_joined: the fee columns attach
+    # positionally, which also survives a duplicated index from the joins above.
+    buildings_joined["water_fee_15min_mean_eur"] = fees_15min["mean_fee_eur"].to_numpy()
+    buildings_joined["water_fee_15min_min_eur"] = fees_15min["min_fee_eur"].to_numpy()
+    buildings_joined["water_fee_15min_max_eur"] = fees_15min["max_fee_eur"].to_numpy()
+    buildings_joined["water_area_share_15min"] = fees_15min["area_share"].to_numpy()
+    tariff_series.to_csv("outputs/timeseries_first_scenario_tariff.csv", index=False)
+    fees_15min.to_csv("outputs/timeseries_first_scenario_building_fees.csv", index=False)
+    print(" -> Section areas: " + ", ".join(f"{name} {area:,.0f} m2" for name, area in gauge_areas.items()))
+    print(f" -> {len(tariff_series)} intervals, mean tariff {tariff_series['tariff_eur'].mean():,.2f} EUR")
+    
     print("Step 3 (Scenario 2): Applying rainwater impact and imperviousness fee model...")
     buildings_joined = process_rainwater_impact(
         buildings_joined,
@@ -60,7 +90,7 @@ def main():
     print("Step 3 (Scenario 3): Applying flood risk proximity levy model...")
     buildings_joined = process_buildings_flood_risk(
         buildings_joined,
-        river_path="data/kilometrage-des-cours-deau.gpkg",
+        river_path=KILOMETRAGE_PATH,
         distance_threshold=50.0,
         base_fee=150.0
     )

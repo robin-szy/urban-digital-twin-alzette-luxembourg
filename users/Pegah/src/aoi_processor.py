@@ -2,7 +2,7 @@ import geopandas as gpd
 from src.aoi import build_aoi  # Assuming aoi.py is available
 import shapely
 
-def generate_aoi_and_filter_buildings(config, data_path, gml_building_path, output_gpkg_path):
+def generate_aoi_and_filter_buildings(config, data_path, buildings_path, output_gpkg_path):
     # Generate AOI
     aoi_gdf, points_gdf = build_aoi(
         river=config.RIVER_NAME,
@@ -13,7 +13,7 @@ def generate_aoi_and_filter_buildings(config, data_path, gml_building_path, outp
     )
     
     # Read and filter buildings
-    buildings = gpd.read_file(gml_building_path)
+    buildings = gpd.read_file(buildings_path)
     if buildings.crs != aoi_gdf.crs:
         buildings = buildings.to_crs(aoi_gdf.crs)
         

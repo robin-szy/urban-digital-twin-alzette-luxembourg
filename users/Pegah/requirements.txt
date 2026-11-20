@@ -4,3 +4,4 @@ pyogrio = 0.7.2
 shapely = 2.0.2
 pandas = 2.1.4
 numpy = 1.26.2
+osmnx = 2.2.0
