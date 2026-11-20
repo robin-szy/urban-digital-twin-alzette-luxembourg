@@ -9,6 +9,7 @@ from src.simple_model_first_scenario import non_residential_water_allocation
 from src.simple_model_second_scenario import process_rainwater_impact
 from src.simple_model_third_scenario import process_buildings_flood_risk
 from src.simple_model_fourth_scenario import process_water_quality_charge
+from src.simple_model_fifth_scenario import process_building_population_water_consumption
 
 from src.exporters import export_results
 
@@ -20,7 +21,10 @@ def main():
     aoi_gdf, filtered_buildings = generate_aoi_and_filter_buildings(
         config=config,
         data_path="data/kilometrage-des-cours-deau.gpkg",
-        gml_building_path="data/BU.Building.gml",
+        # The 2023 register footprints are the single building source: the same
+        # layer the digital twin displays, carrying buildingid, commune, lau2,
+        # area and zmin.
+        buildings_path="data/ACT2023v2_Buildings3d_Footprints.gpkg",
         output_gpkg_path="outputs/alzette_aoi_buildings.gpkg"
     )
     
@@ -65,6 +69,14 @@ def main():
     buildings_joined = process_water_quality_charge(
         buildings_joined,
         quality_unit_price=2.5  # Unit price per m² adjusted for pollution factor
+    )
+    
+    print("Step 3 (Scenario 5): Calculating building water consumption based on population...")
+    buildings_joined = process_building_population_water_consumption(
+        buildings_joined,
+        liters_per_person=160.0,     # in liter
+        unit_price_per_liter=0.005,  # 0.005 €/liter = 5.00 €/m³
+        usable_space_pct=0.80        # 80% usable floor space efficiency ratio from literature
     )
 
     print("Step 4: Exporting final files...")
