@@ -1,0 +1,17 @@
+# Experimental: not installed into EDDIE. Depends on the repository's eddie_flood_costs
+# package (installed, or found through the pytest pythonpath below).
+[project]
+name = "dynamic_flood_costs"
+version = "0.1.0"
+description = "Experimental dynamic flood-cost models (Models 1-3) on top of eddie_flood_costs"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "pandas>=2.1"]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+rem = ["geopandas>=0.14", "rasterio"]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../../../eddie_flood_costs"]
