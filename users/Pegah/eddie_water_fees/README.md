@@ -1,6 +1,6 @@
 # eddie_water_fees
 
-EDDIE plugin for the two models that are not in `eddie_building_population` yet, written to
+EDDIE plugin for the five water-fee scenarios Pegah runs in `users/Pegah/main.py`, written to
 be copied out of `users/Pegah/`:
 
 * **scenario 1, 15-minute** — `src/timeseries_model_first_scenario.py`: the gauge readings
@@ -9,8 +9,17 @@ be copied out of `users/Pegah/`:
 * **scenario 2, seasonal rain** — `seasonal_rain.py` (Lagloire's module) +
   `src/simple_model_second_scenario.py`: the rain of a season on the roofs becomes a volume,
   shared by footprint over **all** buildings.
+* **scenario 3, flood-risk proximity levy** — `src/simple_model_third_scenario.py`: the
+  closer a building is to the water, the higher the levy, `150 € × (1 − distance / 50 m)`
+  inside 50 m and 0 beyond.
+* **scenario 4, water-quality surcharge** — `src/simple_model_fourth_scenario.py`:
+  `footprint × pollution multiplier × 2.5 €/m²`, the multiplier from OSM (3.0 industrial,
+  1.0 residential, 2.0 for commercial / blank / unclassified).
+* **scenario 5, water consumption** — `src/simple_model_fifth_scenario.py`: 160 l per person
+  for residential buildings and `footprint × floors × 0.80 × 160/3 l` for the
+  non-residential ones, at 0.005 €/l.
 
-Both write **extra columns on the existing `building_population` rows** — no new table, no
+All five write **extra columns on the existing `building_population` rows** — no new table, no
 new GeoServer layer. The map layer `input_layers:building_population_4326` (tick
 **Water fees (model result)** under *River*) therefore shows the new values on the same
 buildings, and the panel reads the totals back from `/water-fees/summary.json`.
@@ -30,6 +39,12 @@ buildings, and the panel reads the totals back from `/water-fees/summary.json`.
 | `allocated_rainwater_volume_m3`, `rainwater_cost_eur` | the rain on that building's roof, and its fee |
 | `rain_mm_season`, `rain_volume_m3` | the season's rain and the volume on all the roofs |
 | `rainwater_unit_price_eur_per_m3`, `rain_season`, `rain_source` | the parameters of the run |
+| `distance_to_river_m` | shortest distance from the footprint to the mapped watercourse |
+| `flood_risk_fee_eur` | **scenario 3's levy**: 150 € at 0 m, falling to 0 at 50 m |
+| `pollution_multiplier` | scenario 4's OSM runoff factor (3.0 / 2.0 / 1.0) |
+| `water_quality_charge_eur` | **scenario 4's surcharge**: footprint × multiplier × 2.5 €/m² |
+| `water_consumption_liters`, `water_consumption_m3` | scenario 5's water the building consumes |
+| `water_consumption_cost_eur` | **scenario 5's cost** at 0.005 €/l |
 | `water_fees_computed_utc` | when this task last wrote the scope |
 
 The existing pool-model columns (`area_share`, `allocated_water_volume`, `total_cost`) are
@@ -45,8 +60,8 @@ left alone: the two models sit side by side, so the old numbers stay comparable.
    `EDDIE/eddie_antarctica/docker-compose.override.yml`, then
    `docker compose up -d --no-build --no-deps backend celery_worker`.
 3. **Add the button** — snippet `snippets/02-water-level-control.js.md`: one block in
-   `EDDIE/eddie_antarctica/terriajs/water-level-control.js`, then rebuild Terria with a
-   bumped `?v=`.
+   `EDDIE/eddie_antarctica/terriajs/water-level-control.js` (the panel *and* the one line that
+   loads the click popup), then rebuild Terria with a bumped `?v=`.
 
 Nothing else is needed: EDDIE discovers packages named `eddie_*` in `site-packages`, imports
 `tasks.py` in the worker and `blueprint.py` in the backend. `blueprint.py` and `tasks.py` are
@@ -70,6 +85,37 @@ Or straight in the worker, which is the quickest way to see the log:
 ```powershell
 docker exec -w /app celery_worker_digital_twin /venv/bin/python -c "from eddie.tasks import app; print(app.send_task('eddie_water_fees.tasks.compute_water_fees', kwargs={'gauge_start': '2026-11-20T14:00', 'gauge_end': '2026-11-20T18:00'}).get(timeout=500))"
 ```
+
+## Click a building: the prices of the five scenarios
+
+Clicking a building in the 3D view opens Terria's **Feature Information** card; this plugin puts a
+**Water fee** section at the top of that card with **scenarios 1 to 5** and **their sum**
+for the clicked building — the prices only, as asked. It is served entirely by this plugin:
+
+| route | what it returns |
+|---|---|
+| `GET /water-fees/building/<building_id>.json` | one building's five `scenarios` (cost, volume, how it was computed), their `total_eur`, its scope and the run time |
+| `GET /water-fees/popup.js` | `static/water_fees_popup.js`, the card section itself |
+
+The id is the map's (`ACT_…`, the 3D buildings' `buildingid`) or the table's
+(`Building2D.ACT_…`, `gml_id` / `localid`); both are accepted. The lookup takes the row with
+the newest `water_fees_computed_utc` across scopes, so a building shows its last run's prices
+whichever scope holds them.
+
+```powershell
+curl.exe -s http://localhost:5000/water-fees/building/ACT_3e3e3aaf-17fa-4dd2-9dca-4405b04fc25e.json
+```
+
+`total_eur` is the sum of all five scenarios, so a building's card is a single figure for the
+whole fee model, not one per scenario.
+
+The script is loaded by the fee block in `water-level-control.js` (one `<script>` tag pointing at
+`/water-fees/popup.js`). It adds its own `<li>` as the first child of the card's
+`.tjs-feature-info-panel__body` list and puts it back if Terria re-renders that list, so **no
+other popup, panel or layer is touched**: the flood-cost popup, the Terria feature-info template
+and `eddie_buildings` stay as their authors wrote them, and the HQ10/HQ100 content of the card
+keeps rendering below the prices. A building without a result for the run says so instead of
+showing numbers, and deselecting the building removes the section.
 
 ## Check the model without EDDIE (host)
 
@@ -108,6 +154,30 @@ writes.
 * The reanalysis is modelled rain on a grid of about 9 km: the region's rain, not one
   street's.
 * The 1991–2020 normals come from one station (Findel, about 5 km east of the river).
+
+**Scenario 3 (flood-risk proximity levy)**
+
+* The distance is measured to the nearest mapped watercourse around the reach
+  (`gis_osm_waterways_free`, classes river / stream / canal / drain), not to one chosen
+  line, so a building on a side stream is charged like one on the Alzette.
+* The levy is the source model's: 150 € at 0 m, falling linearly to 0 € at 50 m.
+
+**Scenario 4 (water-quality surcharge)**
+
+* The pollution multiplier comes from the OSM `type` tag of the building's footprint
+  (3.0 industrial, 1.0 residential, 2.0 for commercial and for buildings without an OSM
+  match), exactly as `simple_model_fourth_scenario.py` classifies it.
+* It is a charge on the footprint (2.5 €/m² × multiplier), so it dominates the total of the
+  five scenarios: it is a levy on sealed area, not an annual water bill.
+
+**Scenario 5 (water consumption)**
+
+* The source model's residential test is kept verbatim — `"residential" in building_type` —
+  and that string is also contained in `"non-residential"`, so every building takes the
+  160 l per person branch and a building without population pays 0 €. The floor-area branch
+  (footprint × floors × 0.80 × 160/3 l) is dead code in `main.py` too; change the test if the
+  floor-area charge is what was meant.
+* A positive population below 1 counts as one person, as in the source model.
 
 ## Traps
 

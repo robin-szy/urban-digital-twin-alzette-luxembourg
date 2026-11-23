@@ -32,6 +32,17 @@ from .gauge_timeseries import (
     volume_series,
 )
 from .rain_fee import DEFAULT_RAINWATER_UNIT_PRICE, rain_table
+from .scenarios import (
+    DEFAULT_DISTANCE_THRESHOLD_M,
+    DEFAULT_FLOOD_RISK_BASE_FEE,
+    DEFAULT_LITERS_PER_PERSON,
+    DEFAULT_QUALITY_UNIT_PRICE,
+    DEFAULT_UNIT_PRICE_PER_LITER,
+    DEFAULT_USABLE_SPACE_PCT,
+    consumption_table,
+    flood_risk_table,
+    water_quality_table,
+)
 from .seasonal_rain import SEASONS, normal_rain_mm, seasonal_rain_mm
 
 TABLE = "building_population"
@@ -61,6 +72,16 @@ COLUMNS: dict[str, str] = {
     "rainwater_unit_price_eur_per_m3": "double precision",
     "rain_season": "text",
     "rain_source": "text",
+    # Scenario 3, flood-risk proximity levy.
+    "distance_to_river_m": "double precision",
+    "flood_risk_fee_eur": "double precision",
+    # Scenario 4, water-quality surcharge.
+    "pollution_multiplier": "double precision",
+    "water_quality_charge_eur": "double precision",
+    # Scenario 5, water consumption by population.
+    "water_consumption_liters": "double precision",
+    "water_consumption_m3": "double precision",
+    "water_consumption_cost_eur": "double precision",
 }
 # Stamped by the UPDATE itself, not carried by the staging table.
 COMPUTED_COLUMN = "water_fees_computed_utc"
@@ -192,10 +213,16 @@ def compute_water_fees(
     season_year: int = 2024,
     use_normals: bool = False,
     rainwater_unit_price: float = DEFAULT_RAINWATER_UNIT_PRICE,
+    distance_threshold: float = DEFAULT_DISTANCE_THRESHOLD_M,
+    flood_risk_base_fee: float = DEFAULT_FLOOD_RISK_BASE_FEE,
+    quality_unit_price: float = DEFAULT_QUALITY_UNIT_PRICE,
+    liters_per_person: float = DEFAULT_LITERS_PER_PERSON,
+    unit_price_per_liter: float = DEFAULT_UNIT_PRICE_PER_LITER,
+    usable_space_pct: float = DEFAULT_USABLE_SPACE_PCT,
     reach_id: str | None = None,
     variant_key: str | None = None,
 ) -> dict:
-    """Add the 15-minute tariff and the seasonal-rain fee to one scope's buildings."""
+    """Add the five water-fee scenarios to one scope's buildings."""
     engine = setup_environment.get_database()
     with engine.connect() as conn:
         reach, variant = resolve_scope(conn, reach_id, variant_key)
@@ -223,7 +250,15 @@ def compute_water_fees(
     rain_mm, rain_source = season_rain(season, season_year, use_normals)
     rain = rain_table(buildings, rain_mm, unit_price=rainwater_unit_price, season=season.strip().lower(),
                       source=rain_source)
+    flood = flood_risk_table(buildings, markers=markers, distance_threshold=distance_threshold,
+                             base_fee=flood_risk_base_fee)
+    quality = water_quality_table(buildings, unit_price=quality_unit_price)
+    consumption = consumption_table(buildings, liters_per_person=liters_per_person,
+                                    unit_price_per_liter=unit_price_per_liter,
+                                    usable_space_pct=usable_space_pct)
     values = fees.merge(rain, on="building_id", how="inner", validate="one_to_one")
+    for extra in (flood, quality, consumption):
+        values = values.merge(extra, on="building_id", how="inner", validate="one_to_one")
     if len(values) != len(buildings):
         raise RuntimeError(f"Matched {len(values)} of {len(buildings)} buildings; refusing to write a partial result.")
 
@@ -236,6 +271,13 @@ def compute_water_fees(
     print(f" -> Mean tariff {mean_tariff:,.2f} EUR shared by {fee_buildings} non-residential buildings")
     print(f" -> {rain_mm} mm of rain -> {values['rain_volume_m3'].iloc[0]:,.0f} m³, "
           f"{values['rainwater_cost_eur'].sum():,.2f} EUR at {rainwater_unit_price}/m³")
+    in_zone = int((values["flood_risk_fee_eur"] > 0).sum())
+    print(f" -> Flood-risk levy: {in_zone} buildings within {distance_threshold:g} m, "
+          f"{values['flood_risk_fee_eur'].sum():,.2f} EUR at {flood_risk_base_fee:g} EUR")
+    print(f" -> Water-quality surcharge: {values['water_quality_charge_eur'].sum():,.2f} EUR "
+          f"at {quality_unit_price}/m²")
+    print(f" -> Water consumption: {values['water_consumption_m3'].sum():,.0f} m³, "
+          f"{values['water_consumption_cost_eur'].sum():,.2f} EUR at {unit_price_per_liter}/l")
     return {
         "table": TABLE,
         "layer": layer,
@@ -256,4 +298,13 @@ def compute_water_fees(
         "rain_source": rain_source,
         "rain_volume_m3": round(float(values["rain_volume_m3"].iloc[0]), 1),
         "rainwater_cost_eur": round(float(values["rainwater_cost_eur"].sum()), 2),
+        "flood_risk_buildings": in_zone,
+        "flood_risk_fee_eur": round(float(values["flood_risk_fee_eur"].sum()), 2),
+        "water_quality_charge_eur": round(float(values["water_quality_charge_eur"].sum()), 2),
+        "water_consumption_m3": round(float(values["water_consumption_m3"].sum()), 1),
+        "water_consumption_cost_eur": round(float(values["water_consumption_cost_eur"].sum()), 2),
+        "all_scenarios_eur": round(float(
+            values["water_fee_15min_mean_eur"].sum() + values["rainwater_cost_eur"].sum()
+            + values["flood_risk_fee_eur"].sum() + values["water_quality_charge_eur"].sum()
+            + values["water_consumption_cost_eur"].sum()), 2),
     }

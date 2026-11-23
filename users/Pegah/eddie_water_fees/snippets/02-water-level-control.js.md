@@ -2,7 +2,7 @@
 
 `EDDIE/eddie_antarctica/terriajs/water-level-control.js`
 
-Nothing has to be added for the *layer*: the two models write columns on
+Nothing has to be added for the *layer*: the five scenarios write columns on
 `building_population`, and the view `building_population_4326` behind
 `input_layers:building_population_4326` is recreated by the task, so the existing
 **Water fees (model result)** tick under *River* shows the new columns on the same
@@ -17,9 +17,10 @@ these two lines (around line 2504 in the file as it is now):
 ```
 
 ```js
-    // Scenario 1 (15-minute gauge readings) and scenario 2 (seasonal rain), from the
-    // eddie_water_fees plugin. It writes columns on building_population, so the result is
-    // drawn by the same "Water fees (model result)" layer: tick it under River.
+    // Scenarios 1-5 of the water-fee model (15-minute gauge readings, seasonal rain,
+    // flood-risk levy, water-quality surcharge, consumption), from the eddie_water_fees
+    // plugin. It writes columns on building_population, so the result is drawn by the same
+    // "Water fees (model result)" layer: tick it under River.
     var fees15 = section(demos.fees, "15-minute tariff and rain");
     var fees15Table = element("table");
 
@@ -134,6 +135,17 @@ these two lines (around line 2504 in the file as it is now):
     fees15.appendChild(element("div", "wl-note",
       "The fee is written on the buildings, then read back from PostGIS. About a minute " +
       "(the gauges come from heichwaasser.lu, the rain from the ERA5 archive)."));
+    showFees15Summary();
+
+    // Per-building prices on click: the plugin serves the popup script itself, so this feature
+    // lives entirely in eddie_water_fees and no other panel or popup has to change.
+    if (!document.getElementById("water-fees-popup-script")) {
+      var feePopup = document.createElement("script");
+      feePopup.id = "water-fees-popup-script";
+      feePopup.src = BACKEND_URL + "/water-fees/popup.js";
+      feePopup.async = true;
+      document.body.appendChild(feePopup);
+    }
 ```
 
 Everything it uses (`section`, `element`, `settingRow`, `rangeSlider`, `checkbox`, `button`,
@@ -141,8 +153,8 @@ Everything it uses (`section`, `element`, `settingRow`, `rangeSlider`, `checkbox
 exists in that file, so the snippet needs no other change.
 
 Terria files are baked into the image: rebuild it **and** bump the version so browsers fetch
-the new script — in `terriajs/entrypoint.sh` the two `water-level-control.js?v=23` become
-`?v=24` (lines 47 and 51), then
+the new script — in `terriajs/entrypoint.sh` the two `water-level-control.js?v=24` become
+`?v=25` (lines 47 and 51), then
 
 ```powershell
 cd EDDIE/eddie_antarctica
