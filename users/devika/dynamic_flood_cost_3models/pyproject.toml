@@ -14,4 +14,4 @@ test = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".", "../../../eddie_flood_costs"]
+pythonpath = [".", "tests", "../../../eddie_flood_costs"]

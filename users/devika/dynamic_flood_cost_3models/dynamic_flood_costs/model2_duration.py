@@ -31,3 +31,16 @@ def compute(depth: pd.DataFrame, samples: pd.DataFrame, jrc: dict) -> pd.DataFra
     multiplier = duration_multiplier(core.hours_wet(depth), classes)
     fraction = (depth_fraction * multiplier).clip(upper=1.0)
     return core.building_damage(fraction, samples, jrc)
+
+
+def compute_for_duration(depth: pd.DataFrame, samples: pd.DataFrame, jrc: dict, hours: float) -> pd.DataFrame:
+    """Model 2 for water levels held for a given time (e.g. one slider level per column).
+
+    Each column is treated on its own: the depth in that column is the peak, and every
+    wet sample is taken as wet for `hours`. With hours = 0 this is Model 1 at that level.
+    """
+    classes = samples["jrc_category"]
+    depth_fraction = core.damage_fraction(depth.clip(lower=0.0), classes, jrc)
+    hours_wet = core.is_wet(depth) * float(hours)          # 1/0 * hours; NaN stays NaN
+    fraction = (depth_fraction * duration_multiplier(hours_wet, classes)).clip(upper=1.0)
+    return core.building_damage(fraction, samples, jrc)

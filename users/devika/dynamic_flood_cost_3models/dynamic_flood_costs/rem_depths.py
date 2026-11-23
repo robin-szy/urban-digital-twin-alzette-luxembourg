@@ -1,5 +1,7 @@
 """
-Depth time series from the twin's gauge history and REM. Runs INSIDE EDDIE (backend
+Depths from the twin's REM, at the cost-model sample points: for a period of stored gauge
+readings (sample_depth_series), or for chosen gauge stages such as the front-end slider's
+(depths_at_stages). Runs INSIDE EDDIE (backend
 container): it needs the gauge history database, the DEM and eddie_water_level.
 
 For every timestep of a period:
@@ -40,33 +42,61 @@ def _level_depth(key) -> dict:
     return rem.compute_level(key) if flood_grid.uses_rem(key) else flood_grid.compute_level(key)
 
 
-def sample_depth_series(start_iso: str, end_iso: str, samples: pd.DataFrame) -> pd.DataFrame:
-    """Long table buildingid, sample_index, timestamp, depth_m for every stored keyframe."""
-    from eddie_water_level import flood_grid  # pylint: disable=import-outside-toplevel
-    from eddie_water_level.blueprint import water_levels  # pylint: disable=import-outside-toplevel
+class _Sampler:
+    """Reads a level's depth at the sample points; grid cells are located once."""
 
-    levels = water_levels({"start": start_iso, "end": end_iso})
-    grid = flood_grid.dem_grid()
-    cells = _grid_cells(samples, grid)
-    inside = cells >= 0
-    ground_known = np.zeros(len(cells), dtype=bool)
-    ground_known[inside] = np.isfinite(grid["mean"].ravel()[cells[inside]])
+    def __init__(self, samples: pd.DataFrame):
+        from eddie_water_level import flood_grid  # pylint: disable=import-outside-toplevel
 
-    by_key = {}
-    frames = []
-    for time, key in zip(levels["times"], levels["keyframe_levels"]):
-        if key not in by_key:
+        grid = flood_grid.dem_grid()
+        self.cells = _grid_cells(samples, grid)
+        inside = self.cells >= 0
+        self.ground_known = np.zeros(len(self.cells), dtype=bool)
+        self.ground_known[inside] = np.isfinite(grid["mean"].ravel()[self.cells[inside]])
+        self._cache = {}
+
+    def depths(self, key) -> np.ndarray:
+        """0 in a dry cell, the water depth in a wet one, NaN outside the grid or the DEM."""
+        if key not in self._cache:
             computed = _level_depth(key)
             wet = computed["wet"].ravel()
             depth = computed["depth"].ravel()
-            values = np.full(len(cells), np.nan)
-            values[ground_known] = 0.0
-            wet_here = ground_known.copy()
-            wet_here[ground_known] = wet[cells[ground_known]]
-            values[wet_here] = np.maximum(depth[cells[wet_here]], 0.0)
-            by_key[key] = values
-        frame = samples.index.to_frame(index=False)
+            known = self.ground_known
+            values = np.full(len(self.cells), np.nan)
+            values[known] = 0.0
+            wet_here = known.copy()
+            wet_here[known] = wet[self.cells[known]]
+            values[wet_here] = np.maximum(depth[self.cells[wet_here]], 0.0)
+            self._cache[key] = values
+        return self._cache[key]
+
+
+def depths_at_stages(stages_cm, samples: pd.DataFrame) -> pd.DataFrame:
+    """Depth at every sample for each stage, as the front-end slider sets it: the same stage
+    (cm) at Pfaffenthal, Hesperange and Livange. Wide table: samples x stages."""
+    from eddie_water_level import flood_grid  # pylint: disable=import-outside-toplevel
+
+    sampler = _Sampler(samples)
+    columns = {}
+    for stage in stages_cm:
+        key = flood_grid.level_key(stage, stage, stage)
+        columns[stage] = sampler.depths(key)
+        print(f"  stage {stage} cm: {int(np.nansum(columns[stage] > 0))} wet samples")
+    table = pd.DataFrame(columns, index=samples.set_index(["buildingid", "sample_index"]).index)
+    table.columns.name = "stage_cm"
+    return table
+
+
+def sample_depth_series(start_iso: str, end_iso: str, samples: pd.DataFrame) -> pd.DataFrame:
+    """Long table buildingid, sample_index, timestamp, depth_m for every stored keyframe."""
+    from eddie_water_level.blueprint import water_levels  # pylint: disable=import-outside-toplevel
+
+    levels = water_levels({"start": start_iso, "end": end_iso})
+    sampler = _Sampler(samples)
+    frames = []
+    for time, key in zip(levels["times"], levels["keyframe_levels"]):
+        frame = samples[["buildingid", "sample_index"]].copy()
         frame["timestamp"] = pd.Timestamp(time)
-        frame["depth_m"] = by_key[key]
+        frame["depth_m"] = sampler.depths(key)
         frames.append(frame)
     return pd.concat(frames, ignore_index=True)

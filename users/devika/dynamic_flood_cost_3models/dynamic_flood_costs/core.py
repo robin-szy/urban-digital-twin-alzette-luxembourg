@@ -19,7 +19,7 @@ As in eddie_flood_costs, a missing depth is never treated as dry. NaN means unkn
 import numpy as np
 import pandas as pd
 
-from flood_costs.damage_calculation import fraction as jrc_fraction
+from .jrc_source import fraction as jrc_fraction
 
 from . import parameters
 
