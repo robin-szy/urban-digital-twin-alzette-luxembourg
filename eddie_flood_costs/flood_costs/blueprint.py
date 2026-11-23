@@ -7,7 +7,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify
 
 from .cost_lookup import CostLookup, InvalidScenario, LookupValidationError, normalize_scenario
-from .popup_context import PopupDetails, build_popup_payload
+from .popup_context import DatabaseDetails, PopupDetails, build_popup_payload
 
 # EDDIE imports <plugin>.blueprint and registers this exact module-level name.
 blueprint = Blueprint("eddie_flood_costs", __name__, url_prefix="/flood-costs")
@@ -93,6 +93,18 @@ def _load_popup_details(path: str, mtime_ns: int, size: int) -> PopupDetails:
     return PopupDetails(path)
 
 
+@lru_cache(maxsize=4)
+def _database_run_id(dataset_version: str):
+    """The run_id stored with the loaded lookup; None if the table has no run_id column."""
+    try:
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+        with _engine().connect() as conn:
+            return conn.execute(text("SELECT run_id FROM flood_cost_lookup WHERE dataset_version = :v"),
+                                {"v": dataset_version}).scalar()
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
 @blueprint.route("/popup/<buildingid>.json", methods=["GET"])
 def building_popup(buildingid):
     """Available precomputed scenarios for one original ID; no geometry or totals.
@@ -114,6 +126,9 @@ def building_popup(buildingid):
         except (OSError, LookupValidationError) as exc:
             current_app.logger.warning("Flood-cost popup context unavailable: %s", exc)
             warning = "Whole-building area, depth and exposure are unavailable."
+    elif not (current_app.config.get("FLOOD_COSTS_LOOKUP_PATH") or os.environ.get("FLOOD_COSTS_LOOKUP_PATH")):
+        # Costs came from the database: take area, depth and exposure from the same published run.
+        details = DatabaseDetails(_engine(), _database_run_id(lookup.to_dict()["dataset_version"]))
     result = build_popup_payload(lookup, buildingid, details, warning)
     return jsonify(result), 200 if result["found"] else 404
 

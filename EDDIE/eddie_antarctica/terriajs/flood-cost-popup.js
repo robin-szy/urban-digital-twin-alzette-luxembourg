@@ -287,7 +287,7 @@
     SCENARIOS.forEach(function (s) {
       var label = document.createElement("label"), box = document.createElement("input");
       box.type = "checkbox"; box.id = "flood-cost-popup-" + s; label.style.marginLeft = "10px";
-      label.appendChild(box); label.appendChild(document.createTextNode(" " + label(s))); panel.appendChild(label); boxes[s] = box;
+      label.appendChild(box); label.appendChild(document.createTextNode(" " + (s === "hqextreme" ? "HQextreme" : s.toUpperCase()))); panel.appendChild(label); boxes[s] = box;
     });
     var note = document.createElement("p"); note.textContent = "Popup only · map controls are unchanged"; note.style.marginBottom = "0"; panel.appendChild(note);
     document.body.appendChild(panel);

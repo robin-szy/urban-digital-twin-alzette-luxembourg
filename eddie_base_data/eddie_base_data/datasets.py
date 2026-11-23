@@ -37,6 +37,7 @@ DATASETS = (
     Dataset("base_flood_extent_hq10", FLOOD_HAZARD_DIR / "HWGK2021_HQ10" / "HWGK2021_HQ10.shp", explode=True),
     Dataset("base_flood_extent_hq100", FLOOD_HAZARD_DIR / "HWGK2021_HQ100" / "HWGK2021_HQ100.shp", explode=True),
     Dataset("base_flood_extent_hqextreme", FLOOD_HAZARD_DIR / "HWGK2021_HQext" / "HWGK2021_HQext.shp", explode=True),
+    Dataset("base_landuse_2024", STATIC_DIR / "luxembourg_landuse_2024_epsg2169.gpkg", layer="landuse_2024", explode=True),
     # River kilometre markers: AOI construction and Devika's water cells
     Dataset("base_river_km_primary", MARKERS_FILE, layer="Kilometrierung primäre Gewässer"),
     Dataset("base_river_km_secondary", MARKERS_FILE, layer="Kilometrierung sekundäre Gewässer"),

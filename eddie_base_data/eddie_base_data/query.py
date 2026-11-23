@@ -39,7 +39,7 @@ def _alzette_35_50_bbox(conn: sa.Connection) -> AoiScope:
 
 
 # dataset -> how its AOI is obtained.
-_BINDINGS = {"building_population": _alzette_35_50_bbox}
+_BINDINGS = {"building_population": _alzette_35_50_bbox, "flood_costs": _alzette_35_50_bbox}
 
 
 def resolve_aoi(conn: sa.Connection, dataset: str) -> AoiScope:
