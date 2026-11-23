@@ -6,11 +6,13 @@ from src.population_model import calculate_population_and_heights
 from src.osm_categorizer import enrich_with_osm_industrial_data
 
 from src.simple_model_first_scenario import non_residential_water_allocation
-from src.timeseries_model_first_scenario import period_fees
 from src.simple_model_second_scenario import process_rainwater_impact
 from src.simple_model_third_scenario import process_buildings_flood_risk
 from src.simple_model_fourth_scenario import process_water_quality_charge
 from src.simple_model_fifth_scenario import process_building_population_water_consumption
+
+from src.timeseries_model_first_scenario import period_fees
+from src.seasonal_rain import seasonal_rain_mm, normal_rain_mm, rain_volume_m3
 
 from src.exporters import export_results
 
@@ -50,13 +52,13 @@ def main():
     buildings_joined = enrich_with_osm_industrial_data(buildings_joined, aoi_gdf=aoi_gdf)
     #print("ALL COLUMNS NOW IN MEMORY:", buildings_joined.columns.tolist())
     
-    print("Step 3 (Scenario 1): Applying simplified non-residential water and price model...")
-    buildings_joined = non_residential_water_allocation(
-        buildings_joined,
-        total_water_volume=100000.0,
-        percentage=0.10,
-        unit_price=7.0
-    )
+    # print("Step 3 (Scenario 1): Applying simplified non-residential water and price model...")
+    # buildings_joined = non_residential_water_allocation(
+    #     buildings_joined,
+    #     total_water_volume=100000.0,
+    #     percentage=0.10,
+    #     unit_price=7.0
+    # )
     
     print("Step 3 (Scenario 1, 15-minute): Gauge-driven volume, tariff and fee per building...")
     # Window: GAUGE_START / GAUGE_END (ISO 8601, UTC), else the last 7 days.
@@ -80,12 +82,22 @@ def main():
     print(" -> Section areas: " + ", ".join(f"{name} {area:,.0f} m2" for name, area in gauge_areas.items()))
     print(f" -> {len(tariff_series)} intervals, mean tariff {tariff_series['tariff_eur'].mean():,.2f} EUR")
     
-    print("Step 3 (Scenario 2): Applying rainwater impact and imperviousness fee model...")
-    buildings_joined = process_rainwater_impact(
-        buildings_joined,
-        total_rainwater_volume=120000.0,
-        unit_price=4.5
-    )
+    # Original scenario 2, kept for reference: the fixed 120,000 m³ placeholder
+    # replaced below by the real seasonal rain on the roofs.
+    # print("Step 3 (Scenario 2): Applying rainwater impact and imperviousness fee model...")
+    # buildings_joined = process_rainwater_impact(
+    #     buildings_joined,
+    #     total_rainwater_volume=120000.0,
+    #     unit_price=4.5
+    # )
+
+    print("Step 3 (Scenario 2, real rain data): Applying rainwater impact fee model...")
+    summer = seasonal_rain_mm(2024, "summer") # rain of summer 2024, in mm
+    roofs_m2 = buildings_joined.geometry.area.sum() # all roofs, in m² (metres, EPSG:2169)
+    volume = rain_volume_m3(summer["rain_mm"], roofs_m2) # m³ that fell on the roofs
+    print(f"Summer 2024: {summer['rain_mm']} mm -> {volume:,.0f} m³ on the roofs")
+    buildings_joined = process_rainwater_impact(buildings_joined, total_rainwater_volume=volume, unit_price=4.5)
+
     
     print("Step 3 (Scenario 3): Applying flood risk proximity levy model...")
     buildings_joined = process_buildings_flood_risk(
