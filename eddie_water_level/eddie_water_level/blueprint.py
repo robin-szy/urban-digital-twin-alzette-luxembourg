@@ -511,15 +511,21 @@ def _water_surface_init(
         if kind.startswith("zones-") and kind[len("zones-"):] in FLOOD_ZONE_STYLES:
             scenario_name = kind[len("zones-"):]
             colour = FLOOD_ZONE_STYLES[scenario_name]
+            # AOI change (Robin, 2026-11-25): the zone is cut to the CURRENT reach (see
+            # flood_zone_geojson); id and URL name the reach so Terria fetches it again after
+            # a reach switch instead of keeping the old reach's zone.
+            reach = _current_reach_id()
+            zone_id = f"alzette-flood-zone-{scenario_name}-{reach}"
             catalog.append({
-                "id": f"alzette-flood-zone-{scenario_name}",
+                "id": zone_id,
                 "type": "geojson",
                 "name": f"Flood zone {scenario_name.upper()} (official hazard map)",
-                "url": url_for("eddie_water_level.flood_zone_geojson", scenario=scenario_name, _external=True),
+                "url": url_for("eddie_water_level.flood_zone_geojson", scenario=scenario_name, aoi=reach,
+                               _external=True),
                 "clampToGround": True,
                 "style": {"fill": colour, "fill-opacity": 0.35, "stroke": colour, "stroke-width": 1.5},
             })
-            workbench.append(f"alzette-flood-zone-{scenario_name}")
+            workbench.append(zone_id)
     if "fees" in map_layers and _published("fees"):
         # AOI change (2026-11-20): the layer shows the CURRENT reach only (a filtered view), so
         # its content moves along the river when another reach is selected. Terria keeps a WMS
@@ -559,6 +565,12 @@ def _water_surface_init(
     if buildings:
         # Own id per water view, for the same reason as the water item above.
         buildings_id = f"{BUILDINGS_ITEM_ID}-{query_id}" if query_id else BUILDINGS_ITEM_ID
+        # AOI change (Robin, 2026-11-25): the buildings are those of the CURRENT reach
+        # (eddie_buildings.buildings_3d). Terria caches a CZML item by id and URL, so both
+        # name the reach; otherwise a reach switch would keep showing the old reach's buildings.
+        reach = _current_reach_id()
+        buildings_id = f"{buildings_id}-{reach}"
+        url_query = {**(czml_query or {}), "aoi": reach}  # the buildings endpoint ignores "aoi"
         name = "Alzette 3D buildings"
         if czml_query is not None:
             name += " (orange: touched by water, red: fully flooded)"
@@ -566,7 +578,7 @@ def _water_surface_init(
             "id": buildings_id,
             "type": "czml",
             "name": name if scenario is None else f"{name}, {scenario.upper()}",
-            "url": url_for("eddie_buildings.buildings_3d_czml", _external=True, **(czml_query or {})),
+            "url": url_for("eddie_buildings.buildings_3d_czml", _external=True, **url_query),  # AOI change
         })
         workbench.append(buildings_id)
     for kind in g.get("place_names", []):
@@ -886,6 +898,25 @@ def flood_zone_geojson(scenario: str) -> ResponseValue:
         return _bad_request(str(exc))
     except FileNotFoundError as exc:
         return jsonify({"status": "error", "message": str(exc)}), NOT_FOUND
+    # AOI change (Robin, 2026-11-25): only the part inside the current reach's area (binding
+    # "flood_zones" in eddie_aoi.resolver: the 500 m corridor, like the buildings and results).
+    # The reach is the one named by ?aoi= (the map's URL), else the current one.
+    try:
+        # pylint: disable=import-outside-toplevel
+        from eddie_aoi.db import get_engine
+        from eddie_base_data.query import resolve_aoi
+
+        with get_engine().connect() as conn:
+            reach = request.args.get("aoi", "")
+            if not reach.replace("_", "").isalnum():  # only reach ids like alzette_037000_039000
+                reach = _current_reach_id()
+            try:
+                area = resolve_aoi(conn, "flood_zones", reach).geometry
+            except Exception:  # pylint: disable=broad-except  # not a built reach: the current one
+                area = resolve_aoi(conn, "flood_zones", _current_reach_id()).geometry
+            extent = extent.intersection(area)
+    except ImportError:
+        pass  # no AOI module: the whole zone, as before
     zone = gpd.GeoSeries([extent.simplify(1.0)], crs=2169).to_crs(4326)
     response = current_app.response_class(zone.to_json(), mimetype="application/geo+json")
     response.headers["Cache-Control"] = "public, max-age=86400"

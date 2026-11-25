@@ -289,6 +289,105 @@ def reach_variants_geojson(reach_id):
     return jsonify(collection)
 
 
+#: Follower task -> how the map names it.
+FOLLOWER_LABELS = {
+    "eddie_building_population.tasks.compute_building_population": "Population (input for the water fees)",
+    "eddie_water_fees.tasks.compute_water_fees": "Water fees",
+    "eddie_flood_costs.tasks.recompute_for_current_reach": "Flood depths and flood costs",
+}
+
+
+def _flood_run_is_for(reach_id: str) -> bool:
+    """True when Devika's loaded damage run was computed for this very reach (then it is complete)."""
+    try:
+        import sqlalchemy as sa
+        from eddie_aoi.db import get_engine
+
+        with get_engine().connect() as conn:
+            reaches = conn.execute(sa.text(
+                "SELECT DISTINCT b.reach_id FROM flood_cost_buildings b "
+                "JOIN flood_cost_lookup l ON l.run_id = b.run_id")).scalars().all()
+        return reaches == [reach_id]
+    except Exception:  # pylint: disable=broad-except  # no flood-cost tables yet
+        return False
+
+
+def _follower_state(result, task: str, reach_id: str = "") -> tuple[str, str | None]:
+    """(state, note) of one follower: computing, ready, partial or failed."""
+    state = result.state
+    if state in ("PENDING", "RECEIVED", "STARTED", "RETRY"):
+        return "computing", None
+    if state == "FAILURE":
+        return "failed", str(result.result)[:300]
+    if state != "SUCCESS":
+        return "computing", None
+    value = result.result if isinstance(result.result, dict) else {}
+    if task.endswith("recompute_for_current_reach") and isinstance(value.get("damage"), dict) \
+            and "skipped" in value["damage"] and not _flood_run_is_for(reach_id):
+        # Depths ran; Devika's damage step could not (missing review files): the map shows her
+        # km 35-50 damage for the buildings inside this reach only (task 8.10 stand-in).
+        return "partial", ("Flood depths computed for this reach. Flood costs: the km 35-50 run, "
+                           "shown only for its buildings inside this reach; the others are not computed.")
+    if value.get("tariff_note"):
+        return "partial", f"Scenario 1 {value['tariff_note']}"
+    return "ready", None
+
+
+@blueprint.route("/aoi/current/status.json", methods=["GET"])
+def current_status():
+    """What the modules have computed for the CURRENT reach (2026-11-25).
+
+    One entry per follower task sent when the reach became current (eddie_aoi.tasks.select_reach),
+    with its state: computing (also while waiting for the task before it in its chain), ready,
+    partial (with a note) or failed. ``version`` changes whenever any state changes, so the
+    map can reload the result layers exactly when new results are there.
+    """
+    import hashlib
+
+    import sqlalchemy as sa
+
+    from eddie_aoi.current import current_reach
+    from eddie_aoi.db import aoi_followers, get_engine
+
+    from eddie_aoi.store import read_cached
+
+    _ensure_schema()
+    with get_engine().connect() as conn:
+        reach = current_reach(conn)
+        cached = read_cached(conn, reach.reach_id)
+        rows = conn.execute(sa.select(aoi_followers).where(aoi_followers.c.reach_id == reach.reach_id)
+                            .order_by(aoi_followers.c.position)).mappings().all()
+    modules = []
+    if rows:
+        from eddie.tasks import app  # backend and worker both have the Celery app
+
+        for row in rows:
+            state, note = _follower_state(app.AsyncResult(row["task_id"]), row["task"], reach.reach_id)
+            modules.append({"dataset": row["dataset"], "task": row["task"], "task_id": row["task_id"],
+                            "label": FOLLOWER_LABELS.get(row["task"], row["task"]), "state": state, "note": note})
+    # The 3D buildings of the reach (eddie_buildings): prepared on disk in a separate backend
+    # process the first time this route sees the reach, so they usually load at once in the map.
+    try:
+        from eddie_buildings import buildings_3d
+
+        if buildings_3d.is_prepared(reach.reach_id):
+            state = "ready"
+        else:
+            buildings_3d.prepare_in_background(reach.reach_id)
+            state = "computing"
+        modules.append({"dataset": "buildings", "task": "eddie_buildings.prepare", "task_id": "buildings",
+                        "label": "3D buildings", "state": state, "note": None})
+    except Exception:  # pylint: disable=broad-except  # plugin absent or reach unknown: no line
+        log.exception("3D buildings status unavailable")
+    version = hashlib.md5(
+        (reach.reach_id + "|" + "|".join(f"{m['task_id']}:{m['state']}" for m in modules)).encode()
+    ).hexdigest()[:10]
+    return jsonify({"status": "success", "reach_id": reach.reach_id,
+                    "km_start": cached.km_start if cached else None, "km_end": cached.km_end if cached else None,
+                    "river": cached.river if cached else None, "modules": modules,
+                    "computing": any(m["state"] == "computing" for m in modules), "version": version})
+
+
 @blueprint.route("/aoi/current/variants.geojson", methods=["GET"])
 def current_variants_geojson():
     """The CURRENT reach's AOI as GeoJSON; same ``?variant_key=`` as the per-reach route.

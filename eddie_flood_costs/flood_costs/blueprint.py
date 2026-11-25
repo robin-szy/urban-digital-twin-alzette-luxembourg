@@ -33,24 +33,46 @@ def _engine():
     return get_database()
 
 
-def _require_current_reach(conn):
-    """AOI change (Robin, 2026-11-20): only serve damage computed for the twin's CURRENT reach.
+def _reach_subset():
+    """AOI stand-in (Robin, 2026-11-25, task 8.10) until your damage step runs per reach.
 
-    The loaded result belongs to the run that wrote it (its rows in flood_cost_buildings carry
-    the reach). When the user has selected another reach, these figures describe a different
-    stretch of river, so they are reported as unavailable instead of shown as if they applied.
+    Replaces the all-or-nothing guard of 2026-11-20 (_require_current_reach), which hid ALL
+    damage as soon as another reach was selected. Your method itself is untouched.
+
+    Your loaded run (today: km 35-50) is used as it is, but only for the buildings that lie in
+    the CURRENT reach's 500 m corridor (the area the AOI module gives "flood_costs"):
+      * returns None when the run was computed for the current reach: everything applies;
+      * otherwise returns (ids, buildings_in_reach): the building ids of your run inside the
+        current corridor, and how many buildings the reach has (building_population), for a
+        "N of M buildings in this reach have a damage estimate" label.
+    Buildings outside that set are reported "not computed for this reach" - never 0 EUR.
+    The map layer is cut the same way (flood_cost_buildings_4326, see tasks.py).
     """
-    from sqlalchemy import text  # pylint: disable=import-outside-toplevel
-    from eddie_aoi.current import current_reach  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+    from eddie_aoi.current import current_reach
+    from eddie_base_data.publish import current_area_filter
 
-    computed_for = conn.execute(text(
-        "SELECT DISTINCT b.reach_id FROM flood_cost_buildings b "
-        "JOIN flood_cost_lookup l ON l.run_id = b.run_id")).scalars().all()
-    current = current_reach(conn).reach_id
-    if computed_for != [current]:
-        raise LookupValidationError(
-            f"The loaded flood costs were computed for {computed_for}, not for the current reach "
-            f"{current}; they are not shown for it.")
+    with _engine().connect() as conn:
+        current = current_reach(conn).reach_id
+        computed_for = conn.execute(text(
+            "SELECT DISTINCT b.reach_id FROM flood_cost_buildings b "
+            "JOIN flood_cost_lookup l ON l.run_id = b.run_id")).scalars().all()
+        if computed_for == [current]:
+            return None
+        ids = set(conn.execute(text(
+            "SELECT b.buildingid FROM flood_cost_buildings b JOIN flood_cost_lookup l ON l.run_id = b.run_id "
+            f"WHERE {current_area_filter(conn)}")).scalars().all())
+        in_reach = conn.execute(text(
+            "SELECT count(*) FROM building_population WHERE reach_id = :r AND variant_key = 'corridor_500'"),
+            {"r": current}).scalar()
+    return ids, int(in_reach or 0)
+
+
+def _not_computed(buildingid):
+    """A building of the current reach that your loaded run does not cover (task 8.10)."""
+    return jsonify({"status": "not_computed", "found": False, "buildingid": buildingid, "damage_eur2010": None,
+                    "message": "Flood damage is not computed for this building in the current reach."}), 404
 
 
 def _lookup_from_database() -> CostLookup:
@@ -59,7 +81,7 @@ def _lookup_from_database() -> CostLookup:
         from sqlalchemy import text  # pylint: disable=import-outside-toplevel
         with _engine().connect() as conn:
             version = conn.execute(text("SELECT dataset_version FROM flood_cost_lookup")).scalar_one()
-            _require_current_reach(conn)
+            # AOI: the reach check moved to the routes (_reach_subset), so it can be partial.
         return _load_db_snapshot(version)
     except LookupValidationError:
         raise
@@ -88,7 +110,21 @@ def scenario_summary(scenario):
     """Validated classified-subset sums; never sum unresolved or excluded buildings."""
     try:
         scenario = normalize_scenario(scenario)
-        result = _lookup().summary(scenario)
+        lookup = _lookup()
+        result = lookup.summary(scenario)
+        subset = _reach_subset() if not _lookup_path_configured() else None
+        if subset is not None:
+            # AOI stand-in (task 8.10): the totals of your run's buildings inside the current
+            # reach only, computed with your own _totals, and labelled partial.
+            from .cost_lookup import _totals  # pylint: disable=import-outside-toplevel
+            ids, in_reach = subset
+            buildings = {bid: rec for bid, rec in lookup.to_dict()["buildings"].items() if bid in ids}
+            # Same keys as your summary, recomputed over the subset; none in the reach -> no
+            # total at all (None), never 0 EUR.
+            subset_totals = _totals(buildings, lookup.scenarios)[scenario] if buildings else {"total_eur2010": None}
+            result = {**result, **subset_totals, "partial": True, "buildings_with_estimate": len(buildings), "buildings_in_reach": in_reach,
+                      "partial_note": f"{len(buildings)} of {in_reach} buildings in this reach have a damage "
+                                      "estimate (from the km 35-50 run); the others are not computed."}
     except InvalidScenario as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
     except (OSError, LookupValidationError) as exc:
@@ -96,11 +132,19 @@ def scenario_summary(scenario):
     return jsonify({"status": "success", **result})
 
 
+def _lookup_path_configured() -> bool:
+    """True when the costs come from a configured lookup file (no database, no AOI stand-in)."""
+    return bool(current_app.config.get("FLOOD_COSTS_LOOKUP_PATH") or os.environ.get("FLOOD_COSTS_LOOKUP_PATH"))
+
+
 @blueprint.route("/buildings/<buildingid>/<scenario>.json", methods=["GET"])
 def building_cost(buildingid, scenario):
     """Known unknown costs return 200/null; absent IDs return 404/null."""
     try:
         scenario = normalize_scenario(scenario)
+        subset = _reach_subset() if not _lookup_path_configured() else None
+        if subset is not None and buildingid not in subset[0]:
+            return _not_computed(buildingid)  # AOI stand-in (task 8.10): outside your run's part of the reach
         result = _lookup().building_cost(buildingid, scenario)
     except InvalidScenario as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
@@ -135,8 +179,11 @@ def building_popup(buildingid):
     """
     try:
         lookup = _lookup()
+        subset = _reach_subset() if not _lookup_path_configured() else None
     except (OSError, LookupValidationError) as exc:
         return _unavailable(exc)
+    if subset is not None and buildingid not in subset[0]:
+        return _not_computed(buildingid)  # AOI stand-in (task 8.10)
     details, warning = None, None
     configured = current_app.config.get("FLOOD_COSTS_DETAILS_PATH") or os.environ.get("FLOOD_COSTS_DETAILS_PATH")
     if configured:

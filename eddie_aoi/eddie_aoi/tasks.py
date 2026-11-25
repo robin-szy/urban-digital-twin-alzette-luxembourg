@@ -116,17 +116,46 @@ def select_reach(reach_id: str) -> list[dict]:
     never changes the current reach and never triggers a recompute. Returns what
     was sent, for the build result.
     """
+    import importlib.util
+
+    from celery import chain
+
     from eddie_aoi.current import set_current
-    from eddie_aoi.resolver import FOLLOWERS
+    from eddie_aoi.resolver import FOLLOWERS, THEN
 
     with get_engine().begin() as conn:
         set_current(conn, reach_id)
     log.info("Current reach is now %s; recomputing %s", reach_id, sorted(FOLLOWERS))
 
+    def installed(task_name: str) -> bool:
+        # A dependent task belongs to an optional plugin (e.g. eddie_water_fees); sending it
+        # to a stack without that plugin would leave an unregistered task in the queue.
+        return importlib.util.find_spec(task_name.split(".", 1)[0]) is not None
+
     sent = []
     for dataset, task_name in FOLLOWERS.items():
-        task = app.send_task(task_name)
-        sent.append({"dataset": dataset, "task": task_name, "task_id": task.id})
+        names = [task_name, *[name for name in THEN.get(dataset, ()) if installed(name)]]
+        # immutable: each task starts with its own defaults, not the previous task's result.
+        result = chain(*[app.signature(name, immutable=True) for name in names]).apply_async()
+        # apply_async returns the LAST task's result; walk the parents back to the first.
+        ids = []
+        while result is not None:
+            ids.append(result.id)
+            result = result.parent
+        for name, task_id in zip(names, reversed(ids)):
+            sent.append({"dataset": dataset, "task": name, "task_id": task_id})
+
+    # Remember what was sent for this reach, so the map can show which modules are still
+    # computing (GET /aoi/current/status.json). Replaces the previous selection's rows.
+    from eddie_aoi.db import aoi_followers, create_schema
+
+    with get_engine().begin() as conn:
+        create_schema(conn)
+        conn.execute(aoi_followers.delete())
+        if sent:
+            conn.execute(aoi_followers.insert(), [
+                {"task_id": s["task_id"], "reach_id": reach_id, "dataset": s["dataset"], "task": s["task"],
+                 "position": i} for i, s in enumerate(sent)])
     return sent
 
 

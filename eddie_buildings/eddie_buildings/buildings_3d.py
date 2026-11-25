@@ -110,9 +110,63 @@ _GML_HEIGHT = re.compile(rb'<bu-base:value uom="m">([^<]+)</bu-base:value>')
 # STUDY AREA
 # ============================================================
 
+# --- AOI change (Robin, 2026-11-25) -------------------------------------------------------
+# The buildings used to come from one fixed area: the 500 m river corridor of the water grid
+# (km 35-50), widened by HQ100. So with a smaller reach selected (e.g. km 43-46), buildings
+# outside it were still drawn, and Pegah's / Devika's results (computed for the reach) did
+# not line up with them. Now, when the AOI module is installed, the area is the CURRENT
+# reach's 500 m corridor - the same band Pegah's and Devika's modules compute over - and
+# every cache below is kept per reach, so each reach is built once and switching back to it
+# is instant. Without the AOI module, everything behaves exactly as before.
+
+AOI_DATASET = "buildings"  # its area is set in eddie_aoi.resolver.BINDINGS (corridor, 500 m)
+
+
+def _reach_key():
+    """The current reach id, or None when the AOI module is not installed (then: old area)."""
+    try:
+        from eddie_aoi.current import current_reach  # pylint: disable=import-outside-toplevel
+        from eddie_aoi.db import get_engine  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return None
+    with get_engine().connect() as conn:
+        return current_reach(conn).reach_id
+
+
+@functools.lru_cache(maxsize=8)
+def _reach_area(reach_id: str):
+    """The 3D-building area of a reach (EPSG:2169), from the AOI module's binding."""
+    # pylint: disable=import-outside-toplevel
+    from eddie_aoi.db import get_engine
+    from eddie_base_data.query import resolve_aoi
+
+    with get_engine().connect() as conn:
+        return resolve_aoi(conn, AOI_DATASET, reach_id).geometry
+
+
+def _area_for(reach_key):
+    """AOI change: the reach's area, or the original river corridor without the AOI module."""
+    return _reach_area(reach_key) if reach_key is not None else _river_corridor()
+
+
 def study_area():
     """
     The area whose buildings are shown and counted in the flood reports.
+
+    AOI change: the current reach's area (see _reach_key); the original river corridor
+    (_river_corridor) without the AOI module.
+
+    Returns
+    -------
+    Polygon | MultiPolygon
+        EPSG:2169.
+    """
+    return _area_for(_reach_key())
+
+
+def _river_corridor():
+    """
+    The original area (before the AOI change), unchanged.
 
     The river corridor (BUILDINGS_CORRIDOR_M), widened by the HQ100 extent near the river
     when the flood hazard map is available.
@@ -192,10 +246,102 @@ def _osm_height(row: pd.Series) -> tuple:
 # FOOTPRINTS
 # ============================================================
 
-@functools.lru_cache(maxsize=1)
 def building_footprints() -> gpd.GeoDataFrame:
+    """Footprints of the current reach (AOI change: cached per reach in _building_footprints)."""
+    return _building_footprints(_reach_key())
+
+
+# --- Per-reach disk cache (Robin, 2026-11-25) ----------------------------------------------
+# Building a reach's footprints (heights, ground heights, flood status) takes ~8-15 s, and was
+# repeated after every backend restart and on the first view of each reach. Each reach's result
+# is now kept on disk, named after everything it depends on (the footprint and INSPIRE files,
+# the DEM, the reach's area, the flood extents, this code): a change to any of them gives a new
+# name and the reach is built again. When a reach becomes current, the AOI status route asks
+# for it to be prepared in a separate process (prepare_in_background), so the map usually finds
+# it ready. Delete the folder to force a rebuild.
+BUILDINGS_CACHE_DIR = pathlib.Path(os.environ.get("BUILDINGS_3D_CACHE_DIR", "/stored_data/buildings_3d_cache"))
+
+
+def _cache_file(reach_key) -> pathlib.Path:
+    """The disk cache file of a reach's footprints (see above)."""
+    # pylint: disable=import-outside-toplevel
+    import hashlib
+
+    from eddie_water_level.flood_grid import _extent_cache_file
+
+    stamps = [str(reach_key), BUILDINGS_LAYER]
+    for path in (BUILDINGS_GPKG, pathlib.Path(TERRAIN_DEM), pathlib.Path(__file__)):
+        stat = path.stat() if path.exists() else None
+        stamps.append(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}" if stat else f"{path.name}:missing")
+    inspire = sorted(INSPIRE_BUILDING3D_DIR.glob("*")) if INSPIRE_BUILDING3D_DIR.is_dir() else []
+    stamps.append(f"inspire:{len(inspire)}:{max((p.stat().st_mtime_ns for p in inspire), default=0)}")
+    stamps.append(hashlib.md5(_reach_area(reach_key).wkb).hexdigest())
+    stamps += [_extent_cache_file(scenario).name for scenario in SCENARIOS]
+    digest = hashlib.md5("|".join(stamps).encode()).hexdigest()[:16]
+    return BUILDINGS_CACHE_DIR / f"{reach_key}-{digest}.parquet"
+
+
+def is_prepared(reach_key) -> bool:
+    """True when the reach's footprints are on disk (its 3D buildings load in about a second)."""
+    try:
+        return _cache_file(reach_key).is_file()
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
+def prepare_in_background(reach_key) -> bool:
+    """Build the reach's footprints in a separate process, unless done or already running.
+
+    A separate process, not a thread: the backend serves requests with gevent, which a ~10 s
+    CPU-bound build would block. Returns True when a build is (now) running.
+    """
+    # pylint: disable=import-outside-toplevel
+    import subprocess
+    import sys
+    import time
+
+    if reach_key is None or not str(reach_key).replace("_", "").isalnum() or is_prepared(reach_key):
+        return False
+    lock = BUILDINGS_CACHE_DIR / f"{reach_key}.building"
+    if lock.is_file() and time.time() - lock.stat().st_mtime < 600:
+        return True  # started less than 10 minutes ago: still running
+    BUILDINGS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(time.time()))
+    code = ("import pathlib\nfrom eddie_buildings import buildings_3d as b\n"
+            f"try:\n    b._building_footprints({str(reach_key)!r})\n"
+            f"finally:\n    pathlib.Path({str(lock)!r}).unlink(missing_ok=True)\n")
+    subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return True
+
+
+@functools.lru_cache(maxsize=4)  # AOI change: was maxsize=1 with no argument (one fixed area)
+def _building_footprints(reach_key) -> gpd.GeoDataFrame:
+    """Footprints of a reach: from the disk cache when there, else built and saved (see above)."""
+    if reach_key is None:
+        return _build_footprints(reach_key)
+    cache = _cache_file(reach_key)
+    if cache.is_file():
+        try:
+            return gpd.read_parquet(cache)
+        except Exception:  # pylint: disable=broad-except  # unreadable (half written, old format): rebuild
+            pass
+    buildings = _build_footprints(reach_key)
+    try:
+        BUILDINGS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = cache.with_suffix(".tmp")
+        buildings.to_parquet(temporary)
+        temporary.replace(cache)  # atomic: a parallel reader never sees half a file
+    except Exception:  # pylint: disable=broad-except  # read-only or full disk: still correct, just slower
+        pass
+    return buildings
+
+
+def _build_footprints(reach_key) -> gpd.GeoDataFrame:
     """
     Footprints in the study area, with their height, ground height and flood status.
+
+    AOI change: reach_key is the reach whose area is read (None: the original corridor).
 
     Buildings outside the DEM have no ground height (NaN): they are counted in the flood
     reports but not drawn, as there is no terrain to stand them on.
@@ -212,7 +358,7 @@ def building_footprints() -> gpd.GeoDataFrame:
         if not path.is_file():
             raise FileNotFoundError(f"{name} not found: {path}")
 
-    area = study_area()
+    area = _area_for(reach_key)  # AOI change: was study_area()
 
     # Read only the area's bounding box, in the GeoPackage's own CRS.
     layer_crs = gpd.read_file(BUILDINGS_GPKG, layer=BUILDINGS_LAYER, rows=0).crs
@@ -288,10 +434,15 @@ def _footprint_points(polygon, step: float) -> np.ndarray:
     return np.concatenate(points)
 
 
-@functools.lru_cache(maxsize=1)
 def _flood_samples() -> tuple:
+    """Test points of the current reach's footprints (AOI change: cached per reach)."""
+    return _flood_samples_for(_reach_key())
+
+
+@functools.lru_cache(maxsize=4)  # AOI change: was maxsize=1 with no argument
+def _flood_samples_for(reach_key) -> tuple:
     """
-    Test points of every drawn footprint, computed once.
+    Test points of every drawn footprint, computed once (per reach, AOI change).
 
     Returns
     -------
@@ -300,7 +451,7 @@ def _flood_samples() -> tuple:
         flat index of the flood_grid cell holding it (-1 outside the grid, where the water is
         not computed).
     """
-    buildings = building_footprints().to_crs(2169)
+    buildings = _building_footprints(reach_key).to_crs(2169)  # AOI change: the given reach
     drawn = buildings[buildings["ground_min_m"].notna()]
 
     owner, points = [], []
@@ -337,8 +488,10 @@ def level_status(key) -> np.ndarray:
     np.ndarray
         FLOOD_NONE / FLOOD_TOUCHED / FLOOD_FULL per row of building_footprints().
     """
-    owner, cell = _flood_samples()
-    count = len(building_footprints())
+    # AOI change: one reach lookup for both, so they always describe the same reach.
+    reach_key = _reach_key()
+    owner, cell = _flood_samples_for(reach_key)
+    count = len(_building_footprints(reach_key))
     wet = np.append(wet_mask(key).ravel(), False)[cell]  # cell -1 picks the trailing False: never wet
     points = np.bincount(owner, minlength=count)
     wet_points = np.bincount(owner, weights=wet, minlength=count)
@@ -438,7 +591,8 @@ def build_czml(height_m: float = BUILDING_HEIGHT_M, levels: dict | None = None) 
     list
         CZML packets, ready for json serialisation.
     """
-    buildings = building_footprints()
+    reach_key = _reach_key()  # AOI change: the same reach for the footprints and the packets
+    buildings = _building_footprints(reach_key)
     if levels is not None:
         times = levels["times"]
         status = keyframe_status(levels)
@@ -451,7 +605,7 @@ def build_czml(height_m: float = BUILDING_HEIGHT_M, levels: dict | None = None) 
         "version": "1.0",
     }]
     # Only the colour and flood status change with the water; the rest is built once per height.
-    for index, packet in _static_packets(height_m):
+    for index, packet in _static_packets(height_m, reach_key):
         building_status = status[:, index].tolist()
         flood_status = _intervals(times, building_status, "string", FLOOD_STATUS_TEXT.get)
         czml.append({
@@ -469,17 +623,19 @@ def build_czml(height_m: float = BUILDING_HEIGHT_M, levels: dict | None = None) 
     return czml
 
 
-@functools.lru_cache(maxsize=4)
-def _static_packets(height_m: float) -> tuple:
+@functools.lru_cache(maxsize=8)  # AOI change: was 4, now keyed by height AND reach
+def _static_packets(height_m: float, reach_key=None) -> tuple:
     """
     The parts of every drawn building's CZML packet that do not depend on the water.
+
+    AOI change: reach_key selects the reach's footprints (None: the original corridor).
 
     Returns
     -------
     tuple
         (row of building_footprints(), packet) pairs; packets without material and flood_status.
     """
-    buildings = building_footprints()
+    buildings = _building_footprints(reach_key)
     attributes = [column for column in buildings.columns if column not in (
         "geometry", "measured_height_m", "height_source", "ground_min_m", "ground_mean_m",
     ) and not column.startswith("flooded_")]

@@ -124,6 +124,22 @@ aoi_current = sa.Table(
 )
 
 
+#: The recomputations sent when a reach became current (tasks.select_reach): one row per
+#: follower task, replaced at each selection. The map reads their Celery state through
+#: GET /aoi/current/status.json to show "computing..." until each module has finished
+#: for the new reach (2026-11-25).
+aoi_followers = sa.Table(
+    "aoi_followers",
+    metadata,
+    sa.Column("task_id", sa.Text, primary_key=True),
+    sa.Column("reach_id", sa.Text, nullable=False),
+    sa.Column("dataset", sa.Text, nullable=False),
+    sa.Column("task", sa.Text, nullable=False),
+    sa.Column("position", sa.SmallInteger, nullable=False),
+    sa.Column("sent_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+)
+
+
 def database_url() -> str:
     """Connection URL from the EDDIE PostGIS environment variables."""
     host = os.environ.get("POSTGRES_HOST", "localhost")

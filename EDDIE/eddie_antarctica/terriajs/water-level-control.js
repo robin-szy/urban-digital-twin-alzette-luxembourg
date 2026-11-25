@@ -245,9 +245,48 @@
     return names.length ? "/without/" + names.join(",") : "";
   }
 
+  // AOI change (Robin, 2026-11-25): Terria replaces the WHOLE workbench with the list in each
+  // init file it loads, and every panel click (water level, HQ scenario, a layer box) loads a
+  // new one. So a layer the user had added from "Explore data" (e.g. the river centerline)
+  // vanished on the next click. Before each init, the layers the init does not manage are
+  // remembered and put back once Terria has replaced the workbench. The init's own items all
+  // have ids starting with "alzette-" (water, 3D buildings, flood zones, fees, rain, names, REM).
+  var restoreTimer = null;
+
+  function keepUserLayers() {
+    var t = findTerria();
+    if (!t || !t.workbench) {
+      return;
+    }
+    var before = (t.workbench.items || []).slice();
+    var kept = before.filter(function (item) {
+      return !(typeof item.uniqueId === "string" && item.uniqueId.indexOf("alzette-") === 0);
+    });
+    if (!kept.length) {
+      return;
+    }
+    clearInterval(restoreTimer);
+    var tries = 0;
+    restoreTimer = setInterval(function () {
+      var items = t.workbench.items || [];
+      // Wait until Terria has applied the new init (the workbench list changed), at most ~20 s.
+      var replaced = items.length !== before.length || items.some(function (item, i) { return item !== before[i]; });
+      if (!replaced && ++tries < 100) {
+        return;
+      }
+      clearInterval(restoreTimer);
+      kept.forEach(function (item) {
+        if ((t.workbench.items || []).indexOf(item) < 0 && typeof t.workbench.add === "function") {
+          t.workbench.add(item);
+        }
+      });
+    }, 200);
+  }
+
   function loadInit(path) {
     currentView = path;
     var prefix = showBuildings ? "buildings/" : "";
+    keepUserLayers();  // AOI change: see above
     window.location.hash = BACKEND_URL + "/terria-water-init/" + namesPrefix() + prefix + path + ".json";
   }
 
@@ -379,6 +418,7 @@
     } else if (currentView) {
       loadInit(currentView);
     } else {
+      keepUserLayers();  // AOI change: user-added layers survive the new init
       window.location.hash = BACKEND_URL + "/terria-water-init/" + namesPrefix() +
         (showBuildings ? "buildings" : "names") + ".json";
     }
@@ -770,6 +810,75 @@
     return best;
   }
 
+  // AOI change (Robin, 2026-11-25): the 3D water (live levels and HQ scenarios) is computed over
+  // the whole DEM, but is drawn only inside the CURRENT reach's 500 m corridor - the same area as
+  // the 3D buildings and the module results. aoiClip holds that corridor (lon/lat rings, from
+  // the AOI module); buildLevel keeps only the triangles whose three corners lie inside it, and
+  // only the flow arrows inside it. Without a corridor (AOI module absent), nothing is cut.
+  var aoiClip = { reach: null, rings: null, bbox: null };
+
+  function loadAoiClip(reach) {
+    if (!reach || reach === aoiClip.reach) {
+      return Promise.resolve(false);
+    }
+    return fetch(BACKEND_URL + "/aoi/reach/" + reach + "/variants.geojson?variant_key=corridor_500")
+      .then(function (response) { return response.json(); })
+      .then(function (collection) {
+        var rings = [];
+        (collection.features || []).forEach(function (feature) {
+          var g = feature.geometry || {};
+          var polygons = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+          polygons.forEach(function (polygon) { polygon.forEach(function (ring) { rings.push(ring); }); });
+        });
+        if (!rings.length) {
+          return false;
+        }
+        var bbox = [Infinity, Infinity, -Infinity, -Infinity];
+        rings.forEach(function (ring) {
+          ring.forEach(function (p) {
+            bbox = [Math.min(bbox[0], p[0]), Math.min(bbox[1], p[1]), Math.max(bbox[2], p[0]), Math.max(bbox[3], p[1])];
+          });
+        });
+        aoiClip = { reach: reach, rings: rings, bbox: bbox };
+        return true;
+      })
+      .catch(function () { return false; });
+  }
+
+  // Even-odd point in polygon over all rings (outer rings and holes alike).
+  function insideAoi(lon, lat) {
+    if (!aoiClip.rings) {
+      return true;
+    }
+    var b = aoiClip.bbox;
+    if (lon < b[0] || lon > b[2] || lat < b[1] || lat > b[3]) {
+      return false;
+    }
+    var inside = false;
+    aoiClip.rings.forEach(function (ring) {
+      for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        var yi = ring[i][1], yj = ring[j][1];
+        if ((yi > lat) !== (yj > lat) && lon < (ring[j][0] - ring[i][0]) * (lat - yi) / (yj - yi) + ring[i][0]) {
+          inside = !inside;
+        }
+      }
+    });
+    return inside;
+  }
+
+  // A new corridor: drop every built water level so they are drawn again, cut to it.
+  function rebuildWaterForAoi() {
+    var scene = water.scene;
+    Object.keys(water.built).forEach(function (key) {
+      if (scene) {
+        destroyLevel(scene, water.built[key]);
+      }
+    });
+    water.built = {};
+    water.order = [];
+    water.shown = null;
+  }
+
   function buildLevel(Cesium, grid, data, sectionGeometry) {
     var rows = grid.rows, cols = grid.cols, stride = cols + 1;
     var layers = (data.layers || [data]).map(function (layer) {
@@ -819,6 +928,7 @@
     var flow = new Float32Array(count * 2);
     var indices = new Uint32Array(triangles * 3);
     var used = 0;
+    var inAoi = new Uint8Array(count);  // AOI change: vertex inside the reach corridor
     layers.forEach(function (layer) {
       var vertices = layer.sections ? layer.sections.count : layer.nodes.length;
       for (var i = 0; i < vertices; i++) {
@@ -832,6 +942,7 @@
           col = layer.nodes[i] % stride;
         }
         var lonLat = nodeLonLat(grid, row, col);
+        inAoi[k] = insideAoi(lonLat[0], lonLat[1]) ? 1 : 0;  // AOI change
         toEcef(lonLat[0], lonLat[1], layer.height[i], positions, 3 * k);
         var lambda = lonLat[0] * Math.PI / 180, phi = lonLat[1] * Math.PI / 180;
         normals[3 * k] = Math.cos(phi) * Math.cos(lambda);
@@ -862,6 +973,20 @@
       layer.height = null;
     });
 
+    // AOI change: keep only the triangles with all three corners inside the reach corridor.
+    if (aoiClip.rings) {
+      var kept = 0;
+      for (var tri = 0; tri < used; tri += 3) {
+        if (inAoi[indices[tri]] && inAoi[indices[tri + 1]] && inAoi[indices[tri + 2]]) {
+          indices[kept] = indices[tri];
+          indices[kept + 1] = indices[tri + 1];
+          indices[kept + 2] = indices[tri + 2];
+          kept += 3;
+        }
+      }
+      indices = indices.slice(0, kept);
+    }
+
     var material = new Cesium.Material({
       fabric: {
         uniforms: {
@@ -890,6 +1015,11 @@
     });
 
     var arrows = (data.arrows || []).map(function (arrowList, detail) {
+      // AOI change: only the flow arrows inside the reach corridor.
+      arrowList = arrowList.filter(function (arrow) {
+        var at = nodeLonLat(grid, arrow[1], arrow[0]);
+        return insideAoi(at[0], at[1]);
+      });
       if (!arrowList.length) {
         return null;
       }
@@ -1571,7 +1701,114 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // AOI change (Robin, 2026-11-25): after a reach switch the map shows the NEW reach's results
+  // only, and says which are still being computed.
+  //  * GET /aoi/current/status.json lists the modules recomputed for the current reach
+  //    (population, water fees, flood depths and costs) with their state.
+  //  * The banner below shows "computing..." per module until it is done, then the notes of
+  //    partial results (e.g. flood costs only for part of the reach), then hides itself.
+  //  * When the reach changes, the view is loaded again: the 3D buildings and the water-fee
+  //    layer carry the reach in their id and URL, so Terria fetches the new reach's ones.
+  //  * When a module finishes, every GeoServer result layer on the workbench (Input Layers:
+  //    flood depths, flood costs, population; the water fees) gets a new "aoi" parameter,
+  //    which makes Terria request its tiles again instead of showing cached old ones. The
+  //    database views behind them already show the current reach only.
+  // ---------------------------------------------------------------------------
+  var aoiReach = null;
+  var aoiStatusVersion = null;
+  var aoiDoneTimer = null;
+  var aoiFastPoll = null;
+
+  function aoiBanner() {
+    var banner = document.getElementById("aoi-status-banner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "aoi-status-banner";
+      banner.style.cssText = "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10000;" +
+        "background:rgba(17,24,39,.92);color:#f9fafb;padding:8px 14px;border-radius:8px;font:13px/1.4 sans-serif;" +
+        "max-width:min(640px,90vw);box-shadow:0 2px 10px rgba(0,0,0,.35);display:none;cursor:pointer";
+      banner.title = "Click to hide";
+      banner.addEventListener("click", function () { banner.style.display = "none"; });
+      document.body.appendChild(banner);
+    }
+    return banner;
+  }
+
+  function showAoiStatus(data) {
+    var banner = aoiBanner();
+    var area = data.river ? data.river + " km " + data.km_start + "–" + data.km_end : data.reach_id;
+    var lines = (data.modules || []).map(function (m) {
+      var mark = m.state === "computing" ? "⏳ computing…" : m.state === "failed" ? "⚠️ failed" :
+        m.state === "partial" ? "◐ partial" : "✓ ready";
+      return "<div>" + m.label + ": <b>" + mark + "</b>" +
+        (m.note ? "<div style=\"opacity:.8;font-size:12px\">" + m.note + "</div>" : "") + "</div>";
+    });
+    banner.innerHTML = "<div style=\"font-weight:600;margin-bottom:2px\">Area of interest: " + area + "</div>" +
+      (lines.length ? lines.join("") : "<div>No module results recorded for this area yet.</div>");
+    clearTimeout(aoiDoneTimer);
+    banner.style.display = "block";
+    if (!data.computing) {
+      // Everything finished: keep the summary (and any partial notes) up for a while, then hide.
+      aoiDoneTimer = setTimeout(function () { banner.style.display = "none"; }, 20000);
+    }
+  }
+
+  function refreshResultLayers(version) {
+    var t = findTerria();
+    if (!t || !t.workbench) {
+      return;
+    }
+    (t.workbench.items || []).forEach(function (item) {
+      if (item.type === "wms" && typeof item.url === "string" && item.url.indexOf("/geoserver/input_layers") >= 0 &&
+          item.setTrait) {
+        var parameters = Object.assign({}, item.parameters || {}, { aoi: version });
+        item.setTrait("user", "parameters", parameters);
+      }
+    });
+  }
+
+  function refreshAoiStatus() {
+    return fetch(BACKEND_URL + "/aoi/current/status.json")
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (data.status !== "success") {
+          return;
+        }
+        // The water is drawn inside the current reach's corridor only (see aoiClip): load the
+        // corridor on the first status and on every reach change, then redraw the water.
+        loadAoiClip(data.reach_id).then(function (loaded) {
+          if (loaded) {
+            rebuildWaterForAoi();
+          }
+        });
+        var reachChanged = aoiReach !== null && data.reach_id !== aoiReach;
+        var changed = aoiStatusVersion !== null && data.version !== aoiStatusVersion;
+        aoiReach = data.reach_id;
+        aoiStatusVersion = data.version;
+        if (reachChanged) {
+          followAoiReach(data.reach_id);
+          reloadView();  // new 3D buildings and water-fee layer for the new reach
+        }
+        if (reachChanged || changed) {
+          refreshResultLayers(data.version);
+          showAoiStatus(data);
+        } else if (data.computing) {
+          showAoiStatus(data);
+        }
+        // Poll every 4 s while something is computing, back to the normal 15 s afterwards.
+        if (data.computing && !aoiFastPoll) {
+          aoiFastPoll = setInterval(refreshAoiStatus, 4000);
+        } else if (!data.computing && aoiFastPoll) {
+          clearInterval(aoiFastPoll);
+          aoiFastPoll = null;
+        }
+      })
+      .catch(function () { /* backend unreachable: keep what is shown */ });
+  }
+
   function refreshLayerStatus() {
+    refreshAoiStatus();  // AOI change: the current reach's module states (see above)
     return fetch(BACKEND_URL + "/map-layers/status.json")
       .then(function (response) { return response.json(); })
       .then(function (data) {
@@ -2547,6 +2784,141 @@
     fees.appendChild(element("div", "wl-note",
       "Tick Water fees in the River category to show the result on the map. The run takes about a minute."));
     showFeesSummary();
+
+    // Scenario 1 (15-minute gauge readings) and scenario 2 (seasonal rain), from the
+    // eddie_water_fees plugin. It writes columns on building_population, so the result is
+    // drawn by the same "Water fees (model result)" layer: tick it under River.
+    var fees15 = section(demos.fees, "15-minute tariff and rain");
+    var fees15Table = element("table");
+
+    function fees15Text(id, placeholder) {
+      var input = document.createElement("input");
+      input.type = "text";
+      input.id = id;
+      input.placeholder = placeholder;
+      return input;
+    }
+
+    var gaugeFrom = fees15Text("water-level-control-fees15-from", "empty = 7 days before the end");
+    settingRow(fees15Table, "Gauges from (UTC)", gaugeFrom, "");
+    var gaugeTo = fees15Text("water-level-control-fees15-to", "empty = now");
+    settingRow(fees15Table, "Gauges to (UTC)", gaugeTo, "");
+
+    var fee15Share = rangeSlider("water-level-control-fees15-percentage", 0, 1, 0.01, 0.1, percent, function () {});
+    settingRow(fees15Table, "Extra share", fee15Share.input, fee15Share.value);
+
+    var fee15Price = document.createElement("input");
+    fee15Price.type = "number";
+    fee15Price.min = "0";
+    fee15Price.max = "1000";
+    fee15Price.step = "0.5";
+    fee15Price.value = "7";
+    settingRow(fees15Table, "Tariff", fee15Price, "€/m³");
+
+    var rainSeason = document.createElement("select");
+    ["winter", "spring", "summer", "autumn"].forEach(function (name) {
+      rainSeason.appendChild(element("option", null, name));
+    });
+    rainSeason.value = "summer";
+    settingRow(fees15Table, "Rain season", rainSeason, "");
+
+    var rainYear = document.createElement("input");
+    rainYear.type = "number";
+    rainYear.min = "1950";
+    rainYear.max = "2100";
+    rainYear.step = "1";
+    rainYear.value = "2024";
+    settingRow(fees15Table, "Season year", rainYear, "");
+
+    var rainPrice = document.createElement("input");
+    rainPrice.type = "number";
+    rainPrice.min = "0";
+    rainPrice.max = "1000";
+    rainPrice.step = "0.5";
+    rainPrice.value = "4.5";
+    settingRow(fees15Table, "Rain fee", rainPrice, "€/m³");
+
+    var rainNormals = checkbox("water-level-control-fees15-normals", "Use 1991-2020 normals (offline)", function () {});
+    fees15.appendChild(fees15Table);
+    fees15.appendChild(rainNormals.label);
+
+    var fees15Note = element("div", "wl-note");
+    function showFees15Summary() {
+      return fetch(BACKEND_URL + "/water-fees/summary.json")
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (data.status !== "success") {
+            fees15Note.textContent = data.message || "No result yet.";
+            return;
+          }
+          var euro = new Intl.NumberFormat("en-IE", { maximumFractionDigits: 0 });
+          // AOI change (Robin, 2026-11-25): outside the gauge coverage (Alzette km 35-54.34)
+          // scenario 1 is not computed, so tariff_mean_eur is null - show the reason instead
+          // of "mean tariff €0". A partly covered reach keeps the tariff and adds the note.
+          var tariffText = data.tariff_mean_eur === null || data.tariff_mean_eur === undefined
+            ? "river tariff " + (data.tariff_note || "not computed")
+            : "mean tariff €" + euro.format(data.tariff_mean_eur) + " over " + data.intervals +
+              " intervals (" + data.gauge_quality + ")" + (data.tariff_note ? " [" + data.tariff_note + "]" : "");
+          fees15Note.textContent = "Last run: " + euro.format(data.buildings) + " buildings (" +
+            euro.format(data.fee_buildings) + " non-residential); " + tariffText + "; rain " +
+            data.rain_season + " " + data.rain_mm + " mm -> " +
+            euro.format(data.rain_volume_m3) + " m³ on the roofs, €" + euro.format(data.rainwater_cost_eur) + ".";
+        })
+        .catch(function () { fees15Note.textContent = "Could not reach the backend."; });
+    }
+
+    fees15.appendChild(button("Run 15-minute tariff + rain", function () {
+      fees15Note.textContent = "Running the model...";
+      fetch(BACKEND_URL + "/water-fees/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          percentage: Number(fee15Share.input.value),
+          unit_price: Number(fee15Price.value),
+          rainwater_unit_price: Number(rainPrice.value),
+          gauge_start: gaugeFrom.value || null,
+          gauge_end: gaugeTo.value || null,
+          season: rainSeason.value,
+          season_year: Number(rainYear.value),
+          use_normals: rainNormals.box.checked
+        })
+      })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (data.status !== "processing") {
+            fees15Note.textContent = data.message || "The model could not be started.";
+            return;
+          }
+          return waitForTask(data.task_id).then(function (task) {
+            if (task.status !== "finished") {
+              fees15Note.textContent = "The model failed: " + (task.message || "unknown error");
+              return;
+            }
+            return showFees15Summary().then(function () {
+              if (mapLayers.fees) {
+                reloadView();
+              }
+            });
+          });
+        })
+        .catch(function () { fees15Note.textContent = "Could not reach the backend."; });
+    }));
+
+    fees15.appendChild(fees15Note);
+    fees15.appendChild(element("div", "wl-note",
+      "The fee is written on the buildings, then read back from PostGIS. About a minute " +
+      "(the gauges come from heichwaasser.lu, the rain from the ERA5 archive)."));
+    showFees15Summary();
+
+    // Per-building prices on click: the plugin serves the popup script itself, so this feature
+    // lives entirely in eddie_water_fees and no other panel or popup has to change.
+    if (!document.getElementById("water-fees-popup-script")) {
+      var feePopup = document.createElement("script");
+      feePopup.id = "water-fees-popup-script";
+      feePopup.src = BACKEND_URL + "/water-fees/popup.js";
+      feePopup.async = true;
+      document.body.appendChild(feePopup);
+    }
 
     // Rainfall of a period: interpolated now (POST /load-precipitation-period), shown in later replays.
     var rainPeriod = category(categories.rain, "rain-period", "Prepare a period", openCategories, true);

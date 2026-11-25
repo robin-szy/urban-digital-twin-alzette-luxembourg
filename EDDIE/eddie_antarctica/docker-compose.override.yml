@@ -18,6 +18,7 @@ services:
       - ../../data/raw/Communes:/app/data/communes:ro
       - ../../eddie_base_data/eddie_base_data:/venv/lib/python3.11/site-packages/eddie_base_data:ro
       - ../../eddie_building_population/eddie_building_population:/venv/lib/python3.11/site-packages/eddie_building_population:ro
+      - ../../eddie_water_fees/eddie_water_fees:/venv/lib/python3.11/site-packages/eddie_water_fees:ro
       - ../../eddie_flood_costs/flood_costs:/venv/lib/python3.11/site-packages/eddie_flood_costs:ro
       # Validated immutable lookup/context releases; the API never writes here.
       - ../../data/flood_costs:/app/data/flood_costs:ro
@@ -100,6 +101,7 @@ services:
       - ./src/static/geo:/app/src/static/geo:ro
       - ../../eddie_base_data/eddie_base_data:/venv/lib/python3.11/site-packages/eddie_base_data:ro
       - ../../eddie_building_population/eddie_building_population:/venv/lib/python3.11/site-packages/eddie_building_population:ro
+      - ../../eddie_water_fees/eddie_water_fees:/venv/lib/python3.11/site-packages/eddie_water_fees:ro
       - ../../eddie_flood_costs/flood_costs:/venv/lib/python3.11/site-packages/eddie_flood_costs:ro
       # Raw inputs eddie_base_data ingests into PostGIS, besides src/static/geo; the DEM stays a file
       - ../../data/raw/River_kilometers:/app/data/river_kilometers:ro

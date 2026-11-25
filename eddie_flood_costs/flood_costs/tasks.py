@@ -122,6 +122,24 @@ if importlib.util.find_spec("eddie") is not None:
         return AoiScope(record["reach_id"], record["variant_key"], None, record["degraded"],
                         record["degraded_reason"])
 
+    def cut_cost_view_to_current_reach(engine, run_id):
+        """AOI stand-in (Robin, 2026-11-25, task 8.10): the damage layer shows the current reach only.
+
+        write_derived's view matches rows on reach_id, so on any reach other than the one your
+        damage run was computed for it would show nothing. Until your damage step runs per
+        reach, the view instead keeps the run's buildings that lie in the CURRENT reach's
+        500 m corridor (looked up live, so a reach switch needs no rebuild). The popup and the
+        totals are cut the same way (blueprint._reach_subset). Your tables are unchanged.
+        """
+        # pylint: disable=import-outside-toplevel
+        from eddie_base_data.publish import current_area_filter, recreate_view
+
+        # The run id is written into the view as a literal (not a subquery on flood_cost_lookup),
+        # because the next lines replace flood_cost_lookup, which a dependent view would block.
+        run = "run_id = '" + str(run_id).replace("'", "''") + "'"
+        with transactional(engine).begin() as conn:
+            recreate_view(conn, BUILDINGS_TABLE, f"{run} AND {current_area_filter(conn)}")
+
     @app.task(name="eddie_flood_costs.tasks.run_depth_reconstruction")
     def run_depth_reconstruction(run_id: str | None = None) -> dict:
         """Step 1: reconstructed HQ10/HQ100/HQextreme depths per building; returns the run_id for the next steps."""
@@ -228,6 +246,7 @@ if importlib.util.find_spec("eddie") is not None:
         engine = setup_environment.get_database()
         _check_publish_schema(engine, BUILDINGS_TABLE, buildings)
         write_derived(engine, BUILDINGS_TABLE, buildings, _run_scope(run_id))  # AOI change: was _frozen_scope()
+        cut_cost_view_to_current_reach(engine, run_id)  # AOI stand-in, task 8.10 (see above)
         with transactional(engine).begin() as conn:
             summary.to_sql(SUMMARY_TABLE, conn, if_exists="replace", index=False)
             lookup.to_sql(LOOKUP_TABLE, conn, if_exists="replace", index=False)

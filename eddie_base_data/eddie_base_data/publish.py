@@ -74,6 +74,50 @@ def _current_scope_filter(conn: sa.Connection, scope: AoiScope) -> str:
             f"AND variant_key = '{variant}'")
 
 
+def current_scope_filter(conn: sa.Connection, variant_key: str) -> str:
+    """Public form of _current_scope_filter, for modules that rebuild their own view.
+
+    eddie_water_fees adds columns to building_population and must rebuild the view to show
+    them; it uses this so the rebuilt view keeps showing the CURRENT reach only (2026-11-25:
+    its unfiltered rebuild had made the map draw every reach ever computed at once).
+    """
+    return _current_scope_filter(conn, AoiScope("", variant_key))
+
+
+def current_area_filter(conn: sa.Connection, variant_key: str = "corridor_500") -> str:
+    """A WHERE clause keeping rows whose geometry lies in the current reach's area.
+
+    For results that were NOT computed per reach (Devika's flood damage of the km 35-50 run,
+    task 8.10): instead of matching reach_id, the rows are cut to the current reach's
+    variant area (aoi_variant_cache), so a reach switch shows only the buildings inside the
+    new reach. Rows are EPSG:2169, as is the AOI cache.
+    """
+    # pylint: disable=import-outside-toplevel
+    from eddie_aoi.db import create_schema
+    from eddie_aoi.startup import fallback_reach_id
+
+    create_schema(conn)
+    fallback = fallback_reach_id().replace("'", "''")
+    variant = variant_key.replace("'", "''")
+    return ("ST_Intersects(geometry, (SELECT v.geometry FROM aoi_variant_cache v "
+            f"WHERE v.reach_id = COALESCE((SELECT reach_id FROM aoi_current WHERE id = 1), '{fallback}') "
+            f"AND v.variant_key = '{variant}'))")
+
+
+def recreate_view(conn: sa.Connection, table: str, where: str) -> None:
+    """Rebuild <table>_4326 with all current columns of the table, filtered by where."""
+    view = view_name(table)
+    columns = [c["name"] for c in sa.inspect(conn).get_columns(table) if c["name"] != "geometry"]
+    selected = ", ".join(f'"{column}"' for column in columns)
+    conn.execute(sa.text(f'DROP VIEW IF EXISTS "{view}"'))
+    conn.execute(sa.text(f"""
+        CREATE VIEW "{view}" AS
+        SELECT {selected},
+               ST_Transform(geometry, {PUBLISH_SRID})::geometry(Geometry, {PUBLISH_SRID}) AS geometry
+        FROM "{table}"
+        WHERE {where}"""))
+
+
 def publish_view(engine: sa.Engine, table: str) -> str:
     """Serve the table's 4326 view from GeoServer; Terria's catalog lists every layer of the workspace."""
     # pylint: disable=import-outside-toplevel

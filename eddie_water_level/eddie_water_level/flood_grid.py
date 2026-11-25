@@ -43,6 +43,7 @@ water with, and the map terrain is flat there.
 import base64
 import functools
 import os
+import pathlib  # disk cache of water_extent (2026-11-25)
 import threading
 
 import geopandas as gpd
@@ -668,17 +669,70 @@ def dem_footprint():
     return gpd.GeoSeries([unary_union(parts)], crs=grid["crs"]).to_crs(2169).iloc[0]
 
 
+# --- Disk cache of water_extent (Robin, 2026-11-25) ----------------------------------------
+# water_extent takes 10-17 s per scenario (~37 s for all three) and was recomputed after
+# every backend restart; the 3D buildings need all three before they can be drawn (their
+# flooded_hq* status), which made the first buildings load after a restart take over a minute.
+# The extents depend only on the DEM, the official hazard maps, this code and the water
+# method settings, so they are kept on disk under a key built from exactly those: any change
+# to one of them gives a new key and the extent is computed again. Delete the folder to force it.
+EXTENT_CACHE_DIR = pathlib.Path(os.environ.get("WATER_EXTENT_CACHE_DIR", "/stored_data/water_extent_cache"))
+
+
+def _extent_cache_file(scenario: str) -> pathlib.Path:
+    """The cache file of a scenario's extent, named after everything the extent depends on."""
+    # pylint: disable=import-outside-toplevel
+    import hashlib
+
+    from eddie_water_level import water_surface
+
+    stamps = [scenario]
+    hazard = water_surface.FLOOD_HAZARD_DIR / water_surface.SCENARIOS[scenario]
+    files = [pathlib.Path(TERRAIN_DEM), pathlib.Path(__file__), pathlib.Path(water_surface.__file__)]
+    files += sorted(hazard.glob("*")) if hazard.is_dir() else []
+    for path in files:
+        stat = path.stat() if path.exists() else None
+        stamps.append(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}" if stat else f"{path.name}:missing")
+    stamps += [f"{k}={v}" for k, v in sorted(os.environ.items()) if k.endswith("_METHOD") or k.startswith("WATER_")]
+    return EXTENT_CACHE_DIR / f"{scenario}-{hashlib.md5('|'.join(stamps).encode()).hexdigest()[:16]}.wkb"
+
+
 @functools.lru_cache(maxsize=len(SCENARIOS))
 def water_extent(scenario: str):
     """
     The water extent of a flood scenario, as drawn: the computed water inside the DEM, and the
     official extent where there is no DEM to compute it.
 
+    Kept on disk between restarts (see _extent_cache_file); computed by _compute_water_extent.
+
     Returns
     -------
     Polygon | MultiPolygon
         EPSG:2169.
     """
+    # pylint: disable=import-outside-toplevel
+    import shapely
+
+    try:
+        cache = _extent_cache_file(scenario)
+        if cache.is_file():
+            return shapely.from_wkb(cache.read_bytes())
+    except (OSError, KeyError):  # unreadable or no such scenario: compute (and raise) as before
+        cache = None
+    extent = _compute_water_extent(scenario)
+    if cache is not None:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache.with_suffix(".tmp")
+            temporary.write_bytes(shapely.to_wkb(extent))
+            temporary.replace(cache)  # atomic: a parallel reader never sees half a file
+        except OSError:
+            pass  # read-only or full disk: still correct, just not cached
+    return extent
+
+
+def _compute_water_extent(scenario: str):
+    """The original water_extent body, unchanged."""
     grid = dem_grid()
     wet = wet_mask(scenario)
     computed = [

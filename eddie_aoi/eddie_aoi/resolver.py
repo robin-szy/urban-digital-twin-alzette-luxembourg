@@ -59,7 +59,11 @@ BINDINGS: dict[str, Binding] = {
     "building_population": Binding("corridor", {"half_width_m": 500.0}),
     "flood_costs": Binding("corridor", {"half_width_m": 500.0}),
     "landcover": Binding("corridor", {"half_width_m": 300.0}),
-    "buildings": Binding("corridor", {"half_width_m": 300.0}),
+    # 500 m (was 300): the 3D buildings must cover every building Pegah's and Devika's
+    # modules have a result for, or those results have nothing to click on (Robin, 2026-11-25).
+    "buildings": Binding("corridor", {"half_width_m": 500.0}),
+    # The official flood zones drawn on the map, cut to the same band (2026-11-25).
+    "flood_zones": Binding("corridor", {"half_width_m": 500.0}),
     "addresses": Binding("corridor", {"half_width_m": 300.0}),
     # Replaces AOI_STATION_TOLERANCE_M = 1000.0 in eddie_water_level (task 10.2).
     "water_gauges": Binding("buffer", {"d": 1000.0}),
@@ -78,6 +82,17 @@ FOLLOWERS: dict[str, str] = {
     # Depths for the selected reach; the damage steps run once Devika's missing HQextreme
     # review files are on the host (until then reported as skipped, not failed).
     "flood_costs": "eddie_flood_costs.tasks.recompute_for_current_reach",
+}
+
+#: follower dataset -> tasks that must run AFTER its follower task has finished, in order,
+#: because they read what it wrote. They are chained (Celery), not sent alongside it.
+#: A task whose plugin is not installed in this stack is skipped (see tasks.select_reach).
+THEN: dict[str, tuple[str, ...]] = {
+    # Pegah's five water-fee scenarios write extra columns onto the building_population rows.
+    # Recomputing the population for a new reach replaces those rows, so the fees are NULL
+    # there until her task runs again. Chained after the population task, it runs on the
+    # newest scope (= the reach just selected) with her default settings (Robin, 2026-11-25).
+    "building_population": ("eddie_water_fees.tasks.compute_water_fees",),
 }
 
 
