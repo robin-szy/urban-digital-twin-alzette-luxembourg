@@ -2,7 +2,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.ops import unary_union
 
-def process_buildings_flood_risk(buildings_gdf, river_path="data/kilometrage-des-cours-deau.gpkg", distance_threshold=50.0, base_fee=150.0):
+def process_buildings_flood_risk(buildings_gdf, river_path="data/raw/River_kilometers/kilometrage-des-cours-deau.gpkg", distance_threshold=50.0, base_fee=150.0):
     '''
     Calculates the shortest distance from each building to the river using 
     EPSG:2169 meter coordinates, then applies a proximity-based flood protection fee.

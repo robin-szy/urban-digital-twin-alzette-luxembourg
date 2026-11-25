@@ -1,11 +1,21 @@
-import osmnx as ox
 import geopandas as gpd
 
 def enrich_with_osm_industrial_data(buildings_gdf, aoi_gdf):
     '''
     Fetches building tags from OpenStreetMap within the AOI polygon 
     and spatially joins them to enrich the building dataset with a dedicated OSM column.
+
+    Needs osmnx, which is only imported here: without it the buildings are returned
+    unchanged, with a warning. building_type (the classification the fee models use)
+    comes from population_model, so nothing downstream depends on this enrichment;
+    only osm_building_type (scenario 4's pollution factor) is missing without it.
     '''
+    try:
+        import osmnx as ox
+    except ImportError:
+        print(" -> OSM enrichment skipped: osmnx is not installed (pip install osmnx).")
+        return buildings_gdf.copy()
+
     df = buildings_gdf.copy()
     
     # 1. Get the bounding polygon of your AOI (reprojected to WGS84 EPSG:4326 for OSM query)

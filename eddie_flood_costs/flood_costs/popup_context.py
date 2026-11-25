@@ -54,6 +54,52 @@ class PopupDetails:
         return properties
 
 
+class DatabaseDetails:
+    """Whole-building context from the published table flood_cost_buildings (tasks.load_flood_costs_to_db).
+
+    Used when no details file is configured, so every published run shows area, depth and
+    exposure without a run-specific path. A row is used only if its classification and
+    damage equal the lookup's record for that building (the same check as PopupDetails),
+    so context from another run or reach is never joined to these costs.
+    """
+
+    TABLE = "flood_cost_buildings"
+
+    def __init__(self, engine, run_id=None):
+        self.engine = engine
+        self.run_id = run_id
+
+    def for_building(self, lookup, buildingid):
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+        sql = f'SELECT * FROM "{self.TABLE}" WHERE buildingid = :bid'
+        parameters = {"bid": buildingid}
+        if self.run_id:
+            sql += " AND run_id = :run"
+            parameters["run"] = self.run_id
+        try:
+            with self.engine.connect() as connection:
+                rows = [dict(row) for row in connection.execute(text(sql), parameters).mappings()]
+        except Exception as exc:  # table missing or database unavailable
+            raise LookupValidationError("Popup context table unavailable.") from exc
+        for row in rows:  # some databases (SQLite) return booleans as 0/1
+            for key in ("accepted_provisional_classification", "damage_estimates_provisional"):
+                if type(row.get(key)) is int and row[key] in (0, 1):
+                    row[key] = bool(row[key])
+        expected = lookup.to_dict()["buildings"].get(buildingid)
+        matches = []
+        for row in rows:
+            try:
+                if _record(row, lookup.scenarios) == expected:
+                    matches.append(row)
+            except (LookupValidationError, KeyError, TypeError, ValueError):
+                continue
+        if len(matches) != 1:
+            raise LookupValidationError("No single published context row matches the lookup for this building.")
+        properties = matches[0]
+        properties.pop("geometry", None)
+        return properties
+
+
 def build_popup_payload(lookup, buildingid, details=None, context_warning=None):
     """Join by the exact original ID; unknown amounts stay null, including 404s."""
     costs = {scenario: lookup.building_cost(buildingid, scenario) for scenario in lookup.scenarios}

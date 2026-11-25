@@ -13,6 +13,13 @@ exchange files and refuse to overwrite), in four steps:
     load_depths_to_db(run_id)           -> flood_depth_buildings + GeoServer layer
     run_damage_calculation(run_id)      -> <run>/monetary_damage/
     load_flood_costs_to_db(run_id)      -> flood_cost_* tables + GeoServer layer
+
+and, separately and read-only for the published results:
+
+    build_classification(run_id)        -> <run>/classification/ (JRC category of every building in the AOI)
+
+General route (any AOI, no frozen review files): step 1, build_classification(run_id),
+then run_classified_damage(run_id) instead of step 3, then step 4.
 """
 import importlib.util
 import json
@@ -159,6 +166,45 @@ if importlib.util.find_spec("eddie") is not None:
             raise FileNotFoundError(f"Flood damage inputs missing: {missing}")
         damage_calculation.main()
         return {"run_id": run_id, "monetary": str(paths.stage_path("monetary"))}
+
+    @app.task(name="eddie_flood_costs.tasks.build_classification")
+    def build_classification(run_id: str | None = None, km_start: float | None = None,
+                             km_end: float | None = None, compare: bool = True) -> dict:
+        """JRC category of every building in the AOI: reviewed decisions, land use 111, OSM rules, else Unknown.
+
+        Writes <run>/classification/ only; the damage calculation and the published tables are not touched.
+        The AOI comes from resolve_aoi("flood_costs") unless km_start/km_end are given.
+        """
+        # pylint: disable=import-outside-toplevel
+        from eddie.digitaltwin import setup_environment
+
+        from . import building_classification
+        from .scope import get_scope
+
+        run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = RUNS_DIR / run_id / "classification"
+        with setup_environment.get_database().connect() as conn:
+            scope = get_scope(conn, km_start, km_end)
+            report = building_classification.run(conn, scope, out_dir, compare=compare)
+        return {"run_id": run_id, "classification": str(out_dir), **report}
+
+    @app.task(name="eddie_flood_costs.tasks.run_classified_damage")
+    def run_classified_damage(run_id: str, classification_run_id: str | None = None) -> dict:
+        """Step 3 (general): JRC damage of every building of run_id from its own classification.
+
+        Needs <run>/depth_reconstruction/ (step 1) and <classification_run>/classification/
+        (build_classification; default: the same run). Writes <run>/monetary_damage/, which
+        load_flood_costs_to_db then publishes. run_damage_calculation (reference run) is unchanged.
+        """
+        from . import classified_damage  # pylint: disable=import-outside-toplevel
+
+        paths = _use_run(run_id)
+        classification = RUNS_DIR / (classification_run_id or run_id) / "classification" / "building_classification.csv"
+        out_dir = paths.stage_path("monetary")
+        paths.guard_output(out_dir)
+        report = classified_damage.run(paths.stage_path("depth"), classification,
+                                       paths.input_path("jrc_workbook"), out_dir)
+        return {"run_id": run_id, **report}
 
     @app.task(name="eddie_flood_costs.tasks.load_flood_costs_to_db")
     def load_flood_costs_to_db(run_id: str) -> dict:

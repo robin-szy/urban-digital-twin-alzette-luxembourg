@@ -24,6 +24,10 @@ class AoiScope:
     degraded_reason: str | None = None
 
 
+# Merge note (Robin, 2026-11-25): main added "flood_costs" to the old _BINDINGS table here
+# (km 35-50 bbox). That table is gone on the AOI branch; "flood_costs" is bound in
+# eddie_aoi.resolver.BINDINGS instead (500 m corridor of the current reach), so
+# eddie_flood_costs.scope.get_scope() gets the current reach through this function unchanged.
 def resolve_aoi(conn: sa.Connection, dataset: str, reach_id: str | None = None) -> AoiScope:
     """The AOI a dataset is processed for: its bound variant of the CURRENT reach.
 

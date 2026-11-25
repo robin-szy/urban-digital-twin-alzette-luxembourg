@@ -15,7 +15,7 @@ from test_popup_context import popup_source  # reuse the approved synthetic fixt
 def api(popup_source, tmp_path):
     flask = pytest.importorskip("flask")
     module = importlib.import_module("flood_costs.blueprint")
-    for cache in (module._load_snapshot, module._load_db_snapshot, module._load_popup_details):
+    for cache in (module._load_snapshot, module._load_db_snapshot, module._load_popup_details, module._database_run_id):
         cache.cache_clear()
     _, lookup, details = popup_source
     path = tmp_path / "lookup.json"
@@ -25,7 +25,7 @@ def api(popup_source, tmp_path):
                       FLOOD_COSTS_DETAILS_PATH=str(details))
     app.register_blueprint(module.blueprint)
     yield app, module, lookup, path, details
-    for cache in (module._load_snapshot, module._load_db_snapshot, module._load_popup_details):
+    for cache in (module._load_snapshot, module._load_db_snapshot, module._load_popup_details, module._database_run_id):
         cache.cache_clear()
 
 
@@ -199,3 +199,62 @@ check(popup.display('ACT_ZERO', payloads.ACT_POSITIVE, flags).fc_popup_hq10_dama
         command = [jsc, str(adapter), str(checks)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _publish_context(engine, details, run_id="run-a", with_run_column=True, change=None):
+    """flood_cost_buildings as load_flood_costs_to_db writes it: GeoJSON properties + run_id."""
+    import sqlalchemy
+    features = json.loads(details.read_text())["features"]
+    rows = [dict(f["properties"], geometry="0103", **({"run_id": run_id} if with_run_column else {}))
+            for f in features]
+    if change:
+        change(rows)
+    columns = list(dict.fromkeys(k for row in rows for k in row))
+    with engine.begin() as connection:
+        connection.execute(sqlalchemy.text(
+            "CREATE TABLE flood_cost_buildings (" + ", ".join(f'"{c}"' for c in columns) + ")"))
+        for row in rows:
+            connection.execute(sqlalchemy.text(
+                "INSERT INTO flood_cost_buildings VALUES (" + ", ".join(f":p{i}" for i in range(len(columns))) + ")"),
+                {f"p{i}": row.get(c) for i, c in enumerate(columns)})
+        if with_run_column:
+            connection.execute(sqlalchemy.text("ALTER TABLE flood_cost_lookup ADD COLUMN run_id TEXT"))
+            connection.execute(sqlalchemy.text("UPDATE flood_cost_lookup SET run_id = :r"), {"r": run_id})
+
+
+@pytest.mark.parametrize("with_run_column", [True, False])
+def test_database_context_fills_area_depth_and_exposure(api, database, with_run_column):
+    app, _, _, _, details = api
+    engine, queries = database
+    app.config.pop("FLOOD_COSTS_DETAILS_PATH")
+    _publish_context(engine, details, with_run_column=with_run_column)
+    result = assert_popup(app.test_client(), "ACT_POSITIVE", 13573.35, 27146.7)
+    assert result["context_available"] and not result["warnings"]
+    assert result["footprint_area_m2"] == 321.75
+    assert result["hq10"]["depth_mean_m"] == .75 and result["hq100"]["depth_mean_m"] is None
+    assert result["hq10"]["exposure_status"] == "touched_or_partial"
+    assert result["hq100"]["exposure_status"] == "fully_contained"
+    assert all(sql.lstrip().upper().startswith(("SELECT ", "CREATE ", "INSERT ", "ALTER ", "UPDATE "))
+               for sql, _ in queries)
+
+
+def test_database_context_from_another_run_is_not_joined(api, database):
+    app, _, _, _, details = api
+    engine, _ = database
+    app.config.pop("FLOOD_COSTS_DETAILS_PATH")
+
+    def other_amounts(rows):
+        for row in rows:
+            if row["damage_hq10_eur2010"]:
+                row["damage_hq10_eur2010"] += 1
+    _publish_context(engine, details, with_run_column=False, change=other_amounts)
+    result = assert_popup(app.test_client(), "ACT_POSITIVE", 13573.35, 27146.7)   # costs unchanged
+    assert not result["context_available"] and result["footprint_area_m2"] is None
+    assert result["warnings"]
+
+
+def test_database_context_missing_table_keeps_costs(api, database):
+    app, _, _, _, _ = api
+    app.config.pop("FLOOD_COSTS_DETAILS_PATH")
+    result = assert_popup(app.test_client(), "ACT_POSITIVE", 13573.35, 27146.7)
+    assert not result["context_available"] and result["footprint_area_m2"] is None
