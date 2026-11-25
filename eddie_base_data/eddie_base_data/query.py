@@ -9,11 +9,6 @@ from shapely.geometry.base import BaseGeometry
 
 from .ingest import WORKING_SRID
 
-# The reach every module runs for until the AOI selection reaches them.
-ALZETTE_35_50 = "alzette_035000_050000"
-# Pegah's provisional AOI: the bounding box of the km 35-50 markers, widened by this margin.
-BBOX_MARGIN_M = 500.0
-
 # Bind an AOI exactly: WKB round-trips the coordinates, WKT need not.
 AOI_SQL = f"ST_SetSRID(CAST(:aoi AS geometry), {WORKING_SRID})"
 
@@ -29,29 +24,27 @@ class AoiScope:
     degraded_reason: str | None = None
 
 
-def _alzette_35_50_bbox(conn: sa.Connection) -> AoiScope:
-    geometry = conn.execute(sa.text(f"""
-        SELECT ST_AsHEXEWKB(ST_Expand(ST_Extent(geometry)::box2d::geometry, :margin))
-        FROM base_river_km_primary
-        WHERE toponyme = 'Alzette' AND kilo_km >= 34.999 AND kilo_km <= 50.001"""),
-                            {"margin": BBOX_MARGIN_M}).scalar_one()
-    return AoiScope(ALZETTE_35_50, f"bbox_{BBOX_MARGIN_M:.0f}", shapely.from_wkb(geometry))
+# Merge note (Robin, 2026-11-25): main added "flood_costs" to the old _BINDINGS table here
+# (km 35-50 bbox). That table is gone on the AOI branch; "flood_costs" is bound in
+# eddie_aoi.resolver.BINDINGS instead (500 m corridor of the current reach), so
+# eddie_flood_costs.scope.get_scope() gets the current reach through this function unchanged.
+def resolve_aoi(conn: sa.Connection, dataset: str, reach_id: str | None = None) -> AoiScope:
+    """The AOI a dataset is processed for: its bound variant of the CURRENT reach.
 
+    The area comes from the AOI module's binding registry (eddie_aoi.resolver.BINDINGS),
+    not from here and not from the module. The current reach is the last selection that
+    finished building, or the configured fallback (Alzette km 35-50) before any selection.
+    Modules keep calling this unchanged; what they get follows the selection.
 
-# dataset -> how its AOI is obtained.
-_BINDINGS = {"building_population": _alzette_35_50_bbox, "flood_costs": _alzette_35_50_bbox}
-
-
-def resolve_aoi(conn: sa.Connection, dataset: str) -> AoiScope:
-    """The AOI a dataset is processed for.
-
-    This is the seam for the reach/variant resolver (openspec aoi-reach-variants,
-    group 8): replace its body with the resolver, and no module changes.
+    An unregistered dataset raises, listing the registered ones, rather than getting a
+    default area.
     """
-    try:
-        return _BINDINGS[dataset](conn)
-    except KeyError:
-        raise ValueError(f"No AOI binding for dataset {dataset!r}; bound: {sorted(_BINDINGS)}") from None
+    # pylint: disable=import-outside-toplevel
+    from eddie_aoi.resolver import resolve
+
+    result = resolve(conn, dataset, reach_id)
+    return AoiScope(result.reach_id, result.variant_key, result.geometry,
+                    result.degraded, result.degraded_reason)
 
 
 def aoi_params(aoi: BaseGeometry) -> dict:

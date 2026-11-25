@@ -96,9 +96,9 @@ Where a dataset's AOI is a degraded substitute for the one requested, the map cl
 - **WHEN** a user reopens the map client while a dataset is still served from a substituted area
 - **THEN** the flag is shown again rather than only at the moment of building
 
-### Requirement: Selection is available without a reach already chosen
+### Requirement: The map client opens on the current reach
 
-The map client SHALL present a usable area of interest before any selection has been made in the current deployment, using the configured fallback reach, and SHALL indicate that the fallback is in use.
+The map client SHALL open on the current reach: the last successfully built selection, or the configured fallback reach when no selection has succeeded. It SHALL indicate when the fallback is in use, so a usable area of interest is presented before any selection has been made.
 
 #### Scenario: First use of a deployment
 
@@ -109,3 +109,27 @@ The map client SHALL present a usable area of interest before any selection has 
 
 - **WHEN** a user selects a reach while the fallback is being served
 - **THEN** the selected reach replaces the fallback once it is built
+
+#### Scenario: Reopening after a selection
+
+- **WHEN** a user opens the map client after a reach has been selected and built
+- **THEN** that reach is shown, not the fallback, and no fallback indication is shown
+
+### Requirement: Selecting a reach recomputes the datasets that follow it
+
+When a selected reach finishes building and becomes current, the datasets registered as following the selection SHALL be recomputed for it without a manual step, and the build status SHALL report which recomputations were started.
+
+#### Scenario: Recompute starts on success
+
+- **WHEN** a selected reach finishes building successfully
+- **THEN** each dataset registered as following the selection is recomputed for that reach and the build status names the recomputations started
+
+#### Scenario: Failed build triggers nothing
+
+- **WHEN** a selected reach is refused or fails to build
+- **THEN** no dataset is recomputed
+
+#### Scenario: Dataset not following the selection
+
+- **WHEN** a reach becomes current and a dataset is not registered as following the selection
+- **THEN** that dataset is not recomputed and keeps the area it was computed for

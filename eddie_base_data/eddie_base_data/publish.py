@@ -49,7 +49,73 @@ def write_derived(engine: sa.Engine, table: str, frame: gpd.GeoDataFrame, scope:
             CREATE VIEW "{view}" AS
             SELECT {selected},
                    ST_Transform(geometry, {PUBLISH_SRID})::geometry(Geometry, {PUBLISH_SRID}) AS geometry
-            FROM "{table}" """))
+            FROM "{table}"
+            WHERE {_current_scope_filter(conn, scope)}"""))
+
+
+def _current_scope_filter(conn: sa.Connection, scope: AoiScope) -> str:
+    """The view's WHERE clause: only the current reach, and only this dataset's bound variant.
+
+    The table keeps rows for every reach and variant (switching back is then free); the
+    published layer must show one area, or a second selection would draw both reaches and
+    duplicate the buildings where they overlap. The current reach is looked up live from
+    eddie_aoi's aoi_current table, so switching reach needs no view rebuild; before any
+    selection it is the configured fallback. The variant is the binding at write time
+    (scope.variant_key): rows of a superseded binding, like the old bbox_500, drop out.
+    """
+    # pylint: disable=import-outside-toplevel
+    from eddie_aoi.db import create_schema
+    from eddie_aoi.startup import fallback_reach_id
+
+    create_schema(conn)  # aoi_current must exist before a view can refer to it
+    fallback = fallback_reach_id().replace("'", "''")
+    variant = scope.variant_key.replace("'", "''")
+    return (f"reach_id = COALESCE((SELECT reach_id FROM aoi_current WHERE id = 1), '{fallback}') "
+            f"AND variant_key = '{variant}'")
+
+
+def current_scope_filter(conn: sa.Connection, variant_key: str) -> str:
+    """Public form of _current_scope_filter, for modules that rebuild their own view.
+
+    eddie_water_fees adds columns to building_population and must rebuild the view to show
+    them; it uses this so the rebuilt view keeps showing the CURRENT reach only (2026-11-25:
+    its unfiltered rebuild had made the map draw every reach ever computed at once).
+    """
+    return _current_scope_filter(conn, AoiScope("", variant_key))
+
+
+def current_area_filter(conn: sa.Connection, variant_key: str = "corridor_500") -> str:
+    """A WHERE clause keeping rows whose geometry lies in the current reach's area.
+
+    For results that were NOT computed per reach (Devika's flood damage of the km 35-50 run,
+    task 8.10): instead of matching reach_id, the rows are cut to the current reach's
+    variant area (aoi_variant_cache), so a reach switch shows only the buildings inside the
+    new reach. Rows are EPSG:2169, as is the AOI cache.
+    """
+    # pylint: disable=import-outside-toplevel
+    from eddie_aoi.db import create_schema
+    from eddie_aoi.startup import fallback_reach_id
+
+    create_schema(conn)
+    fallback = fallback_reach_id().replace("'", "''")
+    variant = variant_key.replace("'", "''")
+    return ("ST_Intersects(geometry, (SELECT v.geometry FROM aoi_variant_cache v "
+            f"WHERE v.reach_id = COALESCE((SELECT reach_id FROM aoi_current WHERE id = 1), '{fallback}') "
+            f"AND v.variant_key = '{variant}'))")
+
+
+def recreate_view(conn: sa.Connection, table: str, where: str) -> None:
+    """Rebuild <table>_4326 with all current columns of the table, filtered by where."""
+    view = view_name(table)
+    columns = [c["name"] for c in sa.inspect(conn).get_columns(table) if c["name"] != "geometry"]
+    selected = ", ".join(f'"{column}"' for column in columns)
+    conn.execute(sa.text(f'DROP VIEW IF EXISTS "{view}"'))
+    conn.execute(sa.text(f"""
+        CREATE VIEW "{view}" AS
+        SELECT {selected},
+               ST_Transform(geometry, {PUBLISH_SRID})::geometry(Geometry, {PUBLISH_SRID}) AS geometry
+        FROM "{table}"
+        WHERE {where}"""))
 
 
 def publish_view(engine: sa.Engine, table: str) -> str:
@@ -59,6 +125,31 @@ def publish_view(engine: sa.Engine, table: str) -> str:
 
     view = view_name(table)
     workspace = gs.Workspaces.INPUT_LAYERS_WORKSPACE
+    store = gs.create_main_db_store(workspace)
     with engine.connect() as conn:
-        gs.create_datastore_layer(conn, workspace, gs.create_main_db_store(workspace), view)
+        gs.create_datastore_layer(conn, workspace, store, view)
+    recalculate_bbox(workspace, store, view)
     return f"{workspace}:{view}"
+
+
+def recalculate_bbox(workspace: str, store: str, layer: str) -> None:
+    """Make GeoServer recompute a layer's bounding box from the rows its view shows now.
+
+    GeoServer keeps the box from when the layer was created, so after the current reach
+    changes, a layer would still be framed (and clipped) to the old reach. Called after
+    every publish, i.e. right after a module wrote results for the new reach.
+    """
+    # pylint: disable=import-outside-toplevel
+    import requests
+    from eddie.config import EnvVariable
+    from eddie.geoserver import get_geoserver_url
+
+    response = requests.put(
+        f"{get_geoserver_url()}/workspaces/{workspace}/datastores/{store}/featuretypes/{layer}",
+        params={"recalculate": "nativebbox,latlonbbox"},
+        headers={"Content-Type": "application/xml"},
+        data=f"<featureType><name>{layer}</name><enabled>true</enabled></featureType>",
+        auth=(EnvVariable.GEOSERVER_ADMIN_NAME, EnvVariable.GEOSERVER_ADMIN_PASSWORD),
+        timeout=60,
+    )
+    response.raise_for_status()

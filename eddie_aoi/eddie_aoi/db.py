@@ -97,6 +97,49 @@ aoi_variant_cache = sa.Table(
 )
 
 
+#: The current reach: the last selection that finished building, shared by the
+#: whole deployment. One row at most (the CHECK pins the key to 1); no row means
+#: no selection has succeeded yet and the configured fallback is current.
+#:
+#: ON DELETE RESTRICT makes "the current reach is never evicted" hold in the
+#: database itself, not only in the eviction code: deleting the current reach
+#: from reach_cache fails.
+aoi_current = sa.Table(
+    "aoi_current",
+    metadata,
+    sa.Column("id", sa.SmallInteger, primary_key=True, server_default=sa.text("1")),
+    sa.Column(
+        "reach_id",
+        sa.Text,
+        sa.ForeignKey("reach_cache.reach_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    sa.Column(
+        "selected_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint("id = 1", name="aoi_current_single_row"),
+)
+
+
+#: The recomputations sent when a reach became current (tasks.select_reach): one row per
+#: follower task, replaced at each selection. The map reads their Celery state through
+#: GET /aoi/current/status.json to show "computing..." until each module has finished
+#: for the new reach (2026-11-25).
+aoi_followers = sa.Table(
+    "aoi_followers",
+    metadata,
+    sa.Column("task_id", sa.Text, primary_key=True),
+    sa.Column("reach_id", sa.Text, nullable=False),
+    sa.Column("dataset", sa.Text, nullable=False),
+    sa.Column("task", sa.Text, nullable=False),
+    sa.Column("position", sa.SmallInteger, nullable=False),
+    sa.Column("sent_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+)
+
+
 def database_url() -> str:
     """Connection URL from the EDDIE PostGIS environment variables."""
     host = os.environ.get("POSTGRES_HOST", "localhost")

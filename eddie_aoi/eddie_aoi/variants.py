@@ -522,9 +522,15 @@ HQ100_SELECT_BUFFER_M = 2000.0
 
 #: Substitute for the watershed variant until the real layer is supplied.
 #: NOT hydrologically equivalent to a watershed - which is exactly why a
-#: resolution using it is marked degraded. The team should set this
-#: deliberately rather than inherit it.
-WATERSHED_FALLBACK_BUFFER_M = 1000.0
+#: resolution using it is marked degraded.
+#:
+#: Deliberately the LARGEST variant (team decision, 2026-11-20): the envelope
+#: (the union of a reach's variants) and every dataset bound to watersheds -
+#: precipitation, Lagloire's weather modules later - should keep the lateral
+#: tributaries and hillslopes a narrow band would cut off. It was 1000 m, no
+#: larger than the gauge buffer. 5000 m is a starting value, not a derived one.
+#: It still misses the upstream catchment (partly in France).
+WATERSHED_FALLBACK_BUFFER_M = 5000.0
 
 
 def default_registry(

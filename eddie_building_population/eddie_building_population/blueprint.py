@@ -52,10 +52,15 @@ def building_population_summary() -> ResponseValue:
 
     from .tasks import TABLE
 
+    from eddie_base_data.publish import view_name
+
     engine = setup_environment.get_database()
     with engine.connect() as conn:
         if not sa.inspect(conn).has_table(TABLE):
             return jsonify({"status": "no_data", "message": "The water-fee model has not been run yet."})
+        # AOI change (2026-11-20): the table keeps results for every reach the user has selected;
+        # the summary must describe the CURRENT reach only, which is exactly what the published
+        # view (<table>_4326) shows. Summing the table added up every reach together.
         row = conn.execute(sa.text(f"""
             SELECT COUNT(*) AS buildings,
                    COALESCE(SUM(est_population), 0) AS est_population,
@@ -65,10 +70,11 @@ def building_population_summary() -> ResponseValue:
                    MAX(total_water_baseline) AS total_water_volume,
                    MAX(extra_water_pool) AS extra_water_pool,
                    MAX(unit_price) AS unit_price,
-                   MAX(computed_utc) AS computed_utc
-            FROM "{TABLE}" """)).mappings().one()
+                   MAX(computed_utc) AS computed_utc,
+                   MAX(reach_id) AS reach_id, MAX(variant_key) AS variant_key
+            FROM "{view_name(TABLE)}" """)).mappings().one()
     result = {key: (value.isoformat() if hasattr(value, "isoformat") else value) for key, value in row.items()}
     for key, value in result.items():
-        if key != "computed_utc" and value is not None:
+        if key not in ("computed_utc", "reach_id", "variant_key") and value is not None:
             result[key] = round(float(value), 2)
     return jsonify({"status": "success", **result})

@@ -58,12 +58,87 @@ def _check_publish_schema(engine, table, frame):
 if importlib.util.find_spec("eddie") is not None:
     from eddie.tasks import app
 
-    def _frozen_scope():
-        """The validated workflow computes its own km 35-50 study area and enforces its building cohort,
-        so it does not take a selectable AOI."""
+    # --- AOI change (Robin, 2026-11-20) ----------------------------------------------------
+    # Until now every run was pinned to Alzette km 35-50 ("study_area_frozen"). The workflow now
+    # runs for the CURRENT reach of the twin (the last selected one, or km 35-50 before any
+    # selection), which the AOI module decides (eddie_aoi.resolver, binding "flood_costs").
+    #
+    # Each run resolves its reach ONCE, in step 1, and writes it to <run>/scope.json. Steps 2-4
+    # read it back, so all four steps describe the same stretch even if someone selects another
+    # reach while a run is in progress.
+    #
+    # Depths can only be computed where the three gauges cover the river (km 35.0-54.34, see
+    # _GAUGE_CONSTANTS in depth_reconstruction.py). A reach reaching beyond that is computed for
+    # the covered part only, and the result is marked degraded with the uncovered km named, so
+    # it is never shown as complete.
+
+    SCOPE_FILE = "scope.json"
+    # Her accepted lower bound is km 35.0 (the old RIVER_BEGIN_KM), just below Pfaffenthal at
+    # km 35.04; the upper bound is the Livange gauge.
+    COVERAGE_START_KM = 35.0
+
+    def _coverage_end_km():
+        from .depth_reconstruction import _GAUGE_CONSTANTS  # pylint: disable=import-outside-toplevel
+        return _GAUGE_CONSTANTS["LIVANGE_KM"]
+
+    def _resolve_run_scope(conn, run_id):
+        """Resolve the current reach, work out the gauge-covered part, and record both for the run."""
         # pylint: disable=import-outside-toplevel
-        from eddie_base_data.query import ALZETTE_35_50, AoiScope
-        return AoiScope(ALZETTE_35_50, "study_area_frozen")
+        from eddie_aoi.store import read_cached
+        from eddie_base_data.query import resolve_aoi
+
+        scope = resolve_aoi(conn, "flood_costs")
+        reach = read_cached(conn, scope.reach_id)
+        start, end = max(reach.km_start, COVERAGE_START_KM), min(reach.km_end, _coverage_end_km())
+        if start >= end:
+            raise RuntimeError(
+                f"Reach {scope.reach_id} (km {reach.km_start}-{reach.km_end}) lies outside the gauge "
+                f"coverage (km {COVERAGE_START_KM}-{_coverage_end_km()}): flood depths cannot be "
+                f"computed there. Not covered - not zero.")
+        uncovered = [f"km {a}-{b}" for a, b in ((reach.km_start, start), (end, reach.km_end)) if a < b]
+        reasons = [scope.degraded_reason] if scope.degraded_reason else []
+        if uncovered:
+            reasons.append("not covered by the flood gauges, so no flood costs computed for "
+                           + ", ".join(uncovered))
+        record = {"reach_id": scope.reach_id, "variant_key": scope.variant_key,
+                  "reach_km": [reach.km_start, reach.km_end], "computed_km": [start, end],
+                  "not_covered": uncovered, "degraded": scope.degraded or bool(uncovered),
+                  "degraded_reason": "; ".join(reasons) or None,
+                  "study_area": "her own construction: the 500 m corridor along the reach's markers, "
+                                "widened by the flood extents"}
+        folder = RUNS_DIR / run_id
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / SCOPE_FILE).write_text(json.dumps(record, indent=2))
+        return record
+
+    def _run_scope(run_id):
+        """The AoiScope step 1 recorded for this run."""
+        from eddie_base_data.query import AoiScope  # pylint: disable=import-outside-toplevel
+        path = RUNS_DIR / run_id / SCOPE_FILE
+        if not path.is_file():
+            raise RuntimeError(f"Run {run_id} has no {SCOPE_FILE}: it predates the AOI change, so the "
+                               "reach it was computed for is unknown. Re-run step 1.")
+        record = json.loads(path.read_text())
+        return AoiScope(record["reach_id"], record["variant_key"], None, record["degraded"],
+                        record["degraded_reason"])
+
+    def cut_cost_view_to_current_reach(engine, run_id):
+        """AOI stand-in (Robin, 2026-11-25, task 8.10): the damage layer shows the current reach only.
+
+        write_derived's view matches rows on reach_id, so on any reach other than the one your
+        damage run was computed for it would show nothing. Until your damage step runs per
+        reach, the view instead keeps the run's buildings that lie in the CURRENT reach's
+        500 m corridor (looked up live, so a reach switch needs no rebuild). The popup and the
+        totals are cut the same way (blueprint._reach_subset). Your tables are unchanged.
+        """
+        # pylint: disable=import-outside-toplevel
+        from eddie_base_data.publish import current_area_filter, recreate_view
+
+        # The run id is written into the view as a literal (not a subquery on flood_cost_lookup),
+        # because the next lines replace flood_cost_lookup, which a dependent view would block.
+        run = "run_id = '" + str(run_id).replace("'", "''") + "'"
+        with transactional(engine).begin() as conn:
+            recreate_view(conn, BUILDINGS_TABLE, f"{run} AND {current_area_filter(conn)}")
 
     @app.task(name="eddie_flood_costs.tasks.run_depth_reconstruction")
     def run_depth_reconstruction(run_id: str | None = None) -> dict:
@@ -77,8 +152,10 @@ if importlib.util.find_spec("eddie") is not None:
         run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         paths = _use_run(run_id)
         with setup_environment.get_database().connect() as conn:
-            depth_reconstruction.main(PostgisInputs(conn))
-        return {"run_id": run_id, "depth": str(paths.stage_path("depth"))}
+            scope = _resolve_run_scope(conn, run_id)          # AOI change: the current reach
+            start, end = scope["computed_km"]
+            depth_reconstruction.main(PostgisInputs(conn, start, end), km_start=start, km_end=end)
+        return {"run_id": run_id, "depth": str(paths.stage_path("depth")), "scope": scope}
 
     @app.task(name="eddie_flood_costs.tasks.load_depths_to_db")
     def load_depths_to_db(run_id: str) -> dict:
@@ -92,7 +169,7 @@ if importlib.util.find_spec("eddie") is not None:
         buildings = gpd.read_file(source).to_crs(2169).assign(run_id=run_id)
         engine = setup_environment.get_database()
         _check_publish_schema(engine, DEPTHS_TABLE, buildings)
-        write_derived(engine, DEPTHS_TABLE, buildings, _frozen_scope())
+        write_derived(engine, DEPTHS_TABLE, buildings, _run_scope(run_id))  # AOI change: was _frozen_scope()
         return {"run_id": run_id, "table": DEPTHS_TABLE, "layer": publish_view(engine, DEPTHS_TABLE),
                 "buildings": len(buildings)}
 
@@ -168,10 +245,34 @@ if importlib.util.find_spec("eddie") is not None:
                                 "lookup": json.dumps(document)}])
         engine = setup_environment.get_database()
         _check_publish_schema(engine, BUILDINGS_TABLE, buildings)
-        write_derived(engine, BUILDINGS_TABLE, buildings, _frozen_scope())
+        write_derived(engine, BUILDINGS_TABLE, buildings, _run_scope(run_id))  # AOI change: was _frozen_scope()
+        cut_cost_view_to_current_reach(engine, run_id)  # AOI stand-in, task 8.10 (see above)
         with transactional(engine).begin() as conn:
             summary.to_sql(SUMMARY_TABLE, conn, if_exists="replace", index=False)
             lookup.to_sql(LOOKUP_TABLE, conn, if_exists="replace", index=False)
         return {"run_id": run_id, "dataset_version": document["dataset_version"], "buildings": len(buildings),
                 "layer": publish_view(engine, BUILDINGS_TABLE),
                 "tables": [BUILDINGS_TABLE, SUMMARY_TABLE, LOOKUP_TABLE]}
+
+    @app.task(name="eddie_flood_costs.tasks.recompute_for_current_reach")
+    def recompute_for_current_reach() -> dict:
+        """All four steps for the current reach, as one task (AOI change, Robin, 2026-11-20).
+
+        Sent automatically when a new reach becomes current (eddie_aoi.resolver.FOLLOWERS).
+        Depths always run. The damage steps run only when their inputs are present: on the
+        project host two review files of the HQextreme extension are missing
+        (hqextreme_review/*.json), so they are reported as skipped - with the reason - rather
+        than failing the depths that did succeed.
+        """
+        # pylint: disable=import-outside-toplevel
+        run_id = "reach-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        depth = run_depth_reconstruction(run_id)
+        loaded = load_depths_to_db(run_id)
+        result = {"run_id": run_id, "scope": depth["scope"], "depths": loaded}
+        try:
+            result["damage"] = run_damage_calculation(run_id)
+        except FileNotFoundError as exc:
+            result["damage"] = {"skipped": str(exc)}
+            return result
+        result["costs"] = load_flood_costs_to_db(run_id)
+        return result

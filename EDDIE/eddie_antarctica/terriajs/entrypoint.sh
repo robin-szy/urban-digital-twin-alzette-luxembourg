@@ -44,11 +44,11 @@ fi
 if ! grep -q "water-level-control.js" wwwroot/index.html
 then
   sed -i \
-    's#</body>#<script src="/water-level-control.js?v=23"></script></body>#' \
+    's#</body>#<script src="/water-level-control.js?v=29"></script></body>#' \
     wwwroot/index.html
 fi
 # Refresh the query version when this page already contains an older injection.
-sed -i 's#src="/water-level-control.js?v=[^"]*"#src="/water-level-control.js?v=23"#g' wwwroot/index.html
+sed -i 's#src="/water-level-control.js?v=[^"]*"#src="/water-level-control.js?v=29"#g' wwwroot/index.html
 # Inject the mode selection (entry screen, Casual / In-depth switch) and the Casual mode panel.
 for SCRIPT in twin-mode.js casual-ui.js
 do

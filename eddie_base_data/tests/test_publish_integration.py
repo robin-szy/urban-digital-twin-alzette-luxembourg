@@ -26,6 +26,19 @@ def frame(value, geometry=None):
     return gpd.GeoDataFrame({"value": [value]}, geometry=[geometry or box(77000, 75000, 77010, 75010)], crs=2169)
 
 
+def current_reach_id(engine):
+    """The live deployment's current reach. Read only: these tests never change it."""
+    from eddie_aoi.current import current_reach
+    with engine.connect() as conn:
+        return current_reach(conn).reach_id
+
+
+def view_values(engine):
+    with engine.connect() as conn:
+        return conn.execute(sa.text(f'SELECT reach_id, variant_key, value FROM "{view_name(TABLE)}" '
+                                    "ORDER BY value")).all()
+
+
 def rows(engine):
     with engine.connect() as conn:
         return conn.execute(sa.text(f'SELECT variant_key, value, degraded, degraded_reason FROM "{TABLE}" '
@@ -40,9 +53,11 @@ def test_rerun_replaces_its_own_scope_and_keeps_others(engine):
 
 
 def test_failed_write_keeps_the_previous_result_and_view(engine):
-    write_derived(engine, TABLE, frame(1.0), REACH)
+    # Written for the live current reach, so the view (which shows only that reach) has the row.
+    scope = AoiScope(current_reach_id(engine), "bbox_500")
+    write_derived(engine, TABLE, frame(1.0), scope)
     with pytest.raises(Exception, match="not_a_column"):
-        write_derived(engine, TABLE, frame(2.0).assign(not_a_column=1), REACH)
+        write_derived(engine, TABLE, frame(2.0).assign(not_a_column=1), scope)
     assert rows(engine) == [("bbox_500", 1.0, False, None)]
     with engine.connect() as conn:
         assert conn.execute(sa.text(f'SELECT count(*) FROM "{view_name(TABLE)}"')).scalar_one() == 1
@@ -63,7 +78,7 @@ def test_table_from_before_attribution_is_replaced(engine):
 
 
 def test_table_stays_in_2169_and_only_the_view_is_4326(engine):
-    write_derived(engine, TABLE, frame(1.0), REACH)
+    write_derived(engine, TABLE, frame(1.0), AoiScope(current_reach_id(engine), "bbox_500"))
     with engine.connect() as conn:
         table_srid, view_srid, x = conn.execute(sa.text(
             f'SELECT (SELECT ST_SRID(geometry) FROM "{TABLE}"), ST_SRID(geometry), ST_X(ST_Centroid(geometry)) '
@@ -86,3 +101,41 @@ def test_read_in_aoi_filters_in_sql(engine):
         assert read_in_aoi(conn, TABLE, box(76000, 74000, 78000, 76000))["value"].tolist() == [1]
         assert read_in_aoi(conn, TABLE, box(77020, 75000, 77030, 75010))["value"].tolist() == []
         assert read_in_aoi(conn, TABLE, box(77020, 75000, 77030, 75010), margin_m=15)["value"].tolist() == [1]
+
+
+# --- 12.9 the published view shows the current reach only ---------------------
+
+
+def test_view_shows_only_the_current_reach(engine):
+    current = current_reach_id(engine)
+    write_derived(engine, TABLE, frame(1.0), AoiScope("testbach_000000_001000", "corridor_500"))
+    write_derived(engine, TABLE, frame(2.0), AoiScope(current, "corridor_500"))
+
+    assert view_values(engine) == [(current, "corridor_500", 2.0)]
+    assert len(rows(engine)) == 2, "the other reach's rows stay stored"
+
+
+def test_overlapping_reaches_show_each_feature_once(engine):
+    current = current_reach_id(engine)
+    same_building = box(77000, 75000, 77010, 75010)
+    write_derived(engine, TABLE, frame(1.0, same_building), AoiScope(current, "corridor_500"))
+    write_derived(engine, TABLE, frame(1.0, same_building), AoiScope("testbach_000000_001000", "corridor_500"))
+
+    assert len(view_values(engine)) == 1
+
+
+def test_superseded_variant_is_not_shown(engine):
+    current = current_reach_id(engine)
+    write_derived(engine, TABLE, frame(1.0), AoiScope(current, "bbox_500"))
+    write_derived(engine, TABLE, frame(2.0), AoiScope(current, "corridor_500"))
+
+    # The view follows the binding of the latest write.
+    assert view_values(engine) == [(current, "corridor_500", 2.0)]
+
+
+def test_view_looks_the_current_reach_up_live(engine):
+    """Switching reach needs no view rebuild: the view reads aoi_current itself."""
+    write_derived(engine, TABLE, frame(1.0), AoiScope(current_reach_id(engine), "corridor_500"))
+    with engine.connect() as conn:
+        definition = conn.execute(sa.text("SELECT pg_get_viewdef(:v)"), {"v": view_name(TABLE)}).scalar_one()
+    assert "aoi_current" in definition

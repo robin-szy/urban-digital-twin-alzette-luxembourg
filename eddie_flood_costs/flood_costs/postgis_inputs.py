@@ -40,8 +40,11 @@ class _GeopandasOverTables:
 
 
 class PostgisInputs:
-    def __init__(self, conn):
+    def __init__(self, conn, km_start=35.0, km_end=50.0):
+        # AOI change (Robin, 2026-11-20): the river km range comes from the reach selected in
+        # the twin (tasks.run_depth_reconstruction passes it) instead of the fixed 35-50.
         self.conn = conn
+        self.km_start, self.km_end = km_start, km_end
 
     def _read_markers(self, layer):
         # Source column names, and source order: the frozen functions use both.
@@ -54,7 +57,9 @@ class PostgisInputs:
 
     def markers(self, layer):
         frame = self._read_markers(layer)
-        frame = frame[(frame["TOPONYME"] == "Alzette") & (frame["KILO_KM"] >= 34.999) & (frame["KILO_KM"] <= 50.001)]
+        # Same 0.001 km tolerance either side as the old fixed 34.999-50.001, around the reach.
+        frame = frame[(frame["TOPONYME"] == "Alzette") & (frame["KILO_KM"] >= self.km_start - 0.001)
+                      & (frame["KILO_KM"] <= self.km_end + 0.001)]
         return frame.sort_values("KILO_KM")
 
     def extent(self, scenario, markers):

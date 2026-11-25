@@ -607,12 +607,19 @@ def distribution(values):
 class FileInputs:
     """Markers, scenario extents and footprints from the configured source files."""
 
+    def __init__(self, km_start=35.0, km_end=50.0):
+        # AOI change (Robin, 2026-11-20): the km range is a parameter; defaults = the old 35-50.
+        self.km_start, self.km_end = km_start, km_end
+
     def bind(self, namespace):
         """The frozen functions already read the marker file named in their namespace."""
 
     def markers(self, layer):
+        # Was the fixed "KILO_KM >= 34.999 AND KILO_KM <= 50.001": the same 0.001 km tolerance
+        # either side, now around the requested range (AOI change).
         return gpd.read_file(MARKERS_PATH, layer=layer,
-            where="TOPONYME = 'Alzette' AND KILO_KM >= 34.999 AND KILO_KM <= 50.001").sort_values("KILO_KM")
+            where=f"TOPONYME = 'Alzette' AND KILO_KM >= {self.km_start - 0.001} "
+                  f"AND KILO_KM <= {self.km_end + 0.001}").sort_values("KILO_KM")
 
     def extent(self, scenario, markers):
         return load_local_extent(scenario, markers)
@@ -626,14 +633,21 @@ class FileInputs:
                 for p in [BUILDINGS_PATH,MARKERS_PATH,*HAZARD_PATHS.values()]}
 
 
-def main(inputs=None):
-    inputs = inputs or FileInputs()
+def main(inputs=None, km_start=35.0, km_end=50.0):
+    # AOI change (Robin, 2026-11-20): km_start / km_end select the river stretch (the reach
+    # the user selected in the twin). Defaults are the old fixed 35-50, so main() alone runs
+    # exactly as before.
+    inputs = inputs or FileInputs(km_start, km_end)
     paths = configure()
     paths.guard_output(OUT)
     if any(p.exists() for p in PRODUCTS):
         raise RuntimeError("An output product already exists; refusing to overwrite")
     baseline_features, baseline_samples, baseline_report = {}, {}, None
-    if paths.baseline_root:
+    # AOI change: a comparison baseline was computed for km 35-50, so it is only reused for
+    # that same stretch. For any other reach its saved water-surface profile and samples
+    # would belong to the wrong river kilometres, and the "comparison cohort is missing"
+    # assertion below would fail for every reach that leaves one of those buildings out.
+    if paths.baseline_root and (km_start, km_end) == (35.0, 50.0):
         verify_baseline()
         baseline_geo = json.loads((baseline_path('depth')/'building_reconstructed_depths.geojson').read_text())
         baseline_features = {f['properties']['buildingid']: f for f in baseline_geo['features']}
@@ -645,6 +659,11 @@ def main(inputs=None):
     OUT.mkdir(parents=True,exist_ok=True)
     warnings.filterwarnings("ignore", message="Measured.*")
     ns, reference_hashes = load_reference_functions()
+    # AOI change (Robin, 2026-11-20): run the frozen functions for the requested km range. They
+    # read RIVER_BEGIN_KM / RIVER_END_KM from this namespace when called, so overriding the two
+    # names here is all it takes; the functions themselves are untouched (SHA-256 check holds).
+    # With the defaults (35.0, 50.0) this sets exactly the values they already had.
+    ns["RIVER_BEGIN_KM"], ns["RIVER_END_KM"] = km_start, km_end
     inputs.bind(ns)
     markers = inputs.markers(ns["KILOMETRAGE_LAYER"])
     extents = {s: inputs.extent(s, markers) for s in SCENARIOS}
