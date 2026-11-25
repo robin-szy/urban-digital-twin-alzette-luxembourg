@@ -40,6 +40,15 @@ REM_VIEW_ITEM_ID = "alzette-rem-view"
 # terria_water_init_with_layers): rain, the official flood zones (zones-hq10, ...) and the water fees.
 FLOOD_ZONE_STYLES = {"hq10": "#f0a030", "hq100": "#e0523c", "hqextreme": "#8e1b1b"}
 MAP_LAYER_KINDS = {"rain", "fees"} | {f"zones-{name}" for name in FLOOD_ZONE_STYLES}
+# AOI change (Robin, 2026-11-25): the current reach's centerline and 500 m corridor, toggled in
+# the panel's "Area of interest" category (layer kind -> AOI variant_key, name, style).
+AOI_MAP_LAYERS = {
+    "aoi-centerline": ("centerline", "River centerline (area of interest)",
+                       {"stroke": "#0b63ce", "stroke-width": 3}),
+    "aoi-corridor": ("corridor_500", "Area of interest (500 m corridor)",
+                     {"stroke": "#e8a33d", "stroke-width": 2, "fill": "#e8a33d", "fill-opacity": 0.08}),
+}
+MAP_LAYER_KINDS |= set(AOI_MAP_LAYERS)
 
 # Gauges that can be left out of the water level ("without" argument), in key order.
 GAUGE_NAMES = ("pfaffenthal", "hesperange", "livange")
@@ -526,6 +535,22 @@ def _water_surface_init(
                 "style": {"fill": colour, "fill-opacity": 0.35, "stroke": colour, "stroke-width": 1.5},
             })
             workbench.append(zone_id)
+    for kind, (variant_key, layer_name, style) in AOI_MAP_LAYERS.items():
+        if kind in map_layers:
+            # AOI change: always the CURRENT reach; id and URL name it, so a reach switch
+            # (which reloads the init) draws the new reach's line / corridor.
+            reach = _current_reach_id()
+            layer_id = f"alzette-{kind}-{reach}"
+            catalog.append({
+                "id": layer_id,
+                "type": "geojson",
+                "name": layer_name,
+                "url": url_for("eddie_aoi.reach_variants_geojson", reach_id=reach, variant_key=variant_key,
+                               _external=True),
+                "clampToGround": True,
+                "style": style,
+            })
+            workbench.append(layer_id)
     if "fees" in map_layers and _published("fees"):
         # AOI change (2026-11-20): the layer shows the CURRENT reach only (a filtered view), so
         # its content moves along the river when another reach is selected. Terria keeps a WMS

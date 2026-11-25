@@ -45,7 +45,9 @@
   var SCENARIO_NAMES = ["hq10", "hq100", "hqextreme"];
   // Map layers added by the backend with the layers/<kinds>/ prefix (listed in every init file while
   // shown): rain (on by default, as before), the official flood zones, and the water-fee model's result.
-  var mapLayers = { rain: true, "zones-hq10": false, "zones-hq100": false, "zones-hqextreme": false, fees: false };
+  var mapLayers = { rain: true, "zones-hq10": false, "zones-hq100": false, "zones-hqextreme": false, fees: false,
+    // AOI change (2026-11-25): the current reach's centerline and corridor ("Area of interest" category).
+    "aoi-centerline": false, "aoi-corridor": false };
   // Refresh number of the day replay's rainfall, raised once its interpolation has been computed.
   var rainVersion = 0;
   // The 3D water surface (and its arrows) shown; hidden without reloading anything.
@@ -1784,8 +1786,17 @@
         });
         var reachChanged = aoiReach !== null && data.reach_id !== aoiReach;
         var changed = aoiStatusVersion !== null && data.version !== aoiStatusVersion;
+        var firstStatus = aoiReach === null;
         aoiReach = data.reach_id;
         aoiStatusVersion = data.version;
+        // The panel's "Area of interest" category: the current area, and the built list's selection.
+        if (ui.aoiCurrent) {
+          ui.aoiCurrent.textContent = "Current area: " +
+            (data.river ? data.river + " km " + data.km_start + "–" + data.km_end : data.reach_id);
+        }
+        if ((reachChanged || firstStatus) && ui.loadAoiReaches) {
+          ui.loadAoiReaches();
+        }
         if (reachChanged) {
           followAoiReach(data.reach_id);
           reloadView();  // new 3D buildings and water-fee layer for the new reach
@@ -2334,7 +2345,8 @@
   ];
   // Collapsible categories of the central panel (key, title), and the one of each panel toggle.
   // Which are open is kept in localStorage; open by default unless said otherwise.
-  var CATEGORIES = [["time", "Time"], ["rain", "Rain"], ["river", "River"], ["terrain", "Terrain & Buildings"], ["names", "Names"]];
+  var CATEGORIES = [["aoi", "Area of interest"], ["time", "Time"], ["rain", "Rain"], ["river", "River"],
+    ["terrain", "Terrain & Buildings"], ["names", "Names"]];
   // The buildings controls are a collapsible section of the Terrain & Buildings category (see build).
   var DEMO_CATEGORY = {
     river: "river", flood: "river", replay: "time", live: "time", terrain: "terrain", sun: "time", fees: "river"
@@ -2375,6 +2387,123 @@
     return body;
   }
 
+  // ---------------------------------------------------------------------------
+  // AOI change (Robin, 2026-11-25): the area-of-interest selector in the panel, replacing the
+  // WPS "AOI selector" of Explore data. It uses the AOI module's REST routes:
+  //   POST /aoi/reach {river, km_start, km_end} builds (or reuses) a reach and makes it current;
+  //   GET /aoi/reaches lists the reaches already built, to switch back to one at once.
+  // Once a reach is current, the status banner (refreshAoiStatus) shows what is computing, and
+  // the map reloads its layers for the new reach.
+  // ---------------------------------------------------------------------------
+  function buildAoiControls(parent) {
+    ui.aoiCurrent = element("div", "wl-note", "Current area: …");
+    parent.appendChild(ui.aoiCurrent);
+
+    var note = element("div", "wl-note");
+
+    function selectReach(river, kmStart, kmEnd) {
+      note.textContent = "Preparing " + river + " km " + kmStart + "–" + kmEnd + "…";
+      return fetch(BACKEND_URL + "/aoi/reach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ river: river, km_start: Number(kmStart), km_end: Number(kmEnd) })
+      })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (data.status !== "processing") {
+            note.textContent = data.message || "The area could not be selected.";
+            return;
+          }
+          return waitForTask(data.task_id).then(function (task) {
+            if (task.status !== "finished") {
+              note.textContent = "The area could not be built: " + (task.message || "unknown error");
+              return;
+            }
+            note.textContent = "Selected. The results are recomputed for it (see the banner at the top).";
+            loadReaches();
+            refreshAoiStatus();  // switch the map to the new reach now, not at the next 15 s poll
+          });
+        })
+        .catch(function () { note.textContent = "Could not reach the backend."; });
+    }
+
+    // Areas already built: switching to one reuses it (no new build).
+    var built = document.createElement("select");
+    built.id = "water-level-control-aoi-built";
+    built.style.width = "100%";
+    function loadReaches() {
+      return fetch(BACKEND_URL + "/aoi/reaches")
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          built.textContent = "";
+          (data.reaches || []).filter(function (r) { return r.status === "ready"; })
+            .sort(function (a, b) { return a.river.localeCompare(b.river) || a.km_start - b.km_start || a.km_end - b.km_end; })
+            .forEach(function (r) {
+              var option = element("option", null, r.river + " km " + r.km_start + "–" + r.km_end);
+              option.value = JSON.stringify([r.river, r.km_start, r.km_end]);
+              option.selected = r.reach_id === aoiReach;
+              built.appendChild(option);
+            });
+        })
+        .catch(function () { /* backend unreachable: keep the list */ });
+    }
+    var builtLabel = element("label", "wl-field");
+    builtLabel.appendChild(element("span", null, "Built areas"));
+    builtLabel.appendChild(built);
+    parent.appendChild(builtLabel);
+    parent.appendChild(button("Switch to this area", function () {
+      if (!built.value) {
+        return;
+      }
+      var choice = JSON.parse(built.value);
+      selectReach(choice[0], choice[1], choice[2]);
+    }));
+
+    // A new area: river and kilometre range, validated by the backend before anything is built.
+    parent.appendChild(element("div", "wl-note", "New area (river kilometres):"));
+    var river = document.createElement("input");
+    river.type = "text";
+    river.id = "water-level-control-aoi-river";
+    river.value = "Alzette";
+    var kmFrom = document.createElement("input");
+    kmFrom.type = "number";
+    kmFrom.id = "water-level-control-aoi-from";
+    kmFrom.step = "0.1";
+    kmFrom.min = "0";
+    var kmTo = document.createElement("input");
+    kmTo.type = "number";
+    kmTo.id = "water-level-control-aoi-to";
+    kmTo.step = "0.1";
+    kmTo.min = "0";
+    [["River", river], ["From km", kmFrom], ["To km", kmTo]].forEach(function (entry) {
+      var field = element("label", "wl-field");
+      field.appendChild(element("span", null, entry[0]));
+      field.appendChild(entry[1]);
+      parent.appendChild(field);
+    });
+    parent.appendChild(button("Build and select", function () {
+      if (kmFrom.value === "" || kmTo.value === "") {
+        note.textContent = "Enter both kilometres.";
+        return;
+      }
+      selectReach(river.value.trim(), kmFrom.value, kmTo.value);
+    }));
+    parent.appendChild(note);
+
+    // The current area's layers (they follow every switch).
+    var centerline = checkbox("water-level-control-aoi-centerline", "River centerline", function (checked) {
+      toggleMapLayer("aoi-centerline", checked);
+    });
+    var corridor = checkbox("water-level-control-aoi-corridor", "Area outline (500 m corridor)", function (checked) {
+      toggleMapLayer("aoi-corridor", checked);
+    });
+    parent.appendChild(centerline.label);
+    parent.appendChild(corridor.label);
+
+    ui.loadAoiReaches = loadReaches;
+    loadReaches();
+  }
+
   var CENTRAL_WIDTH = 220;
   var SMALL_WIDTH = 290;
 
@@ -2397,6 +2526,7 @@
     CATEGORIES.forEach(function (entry) {
       categories[entry[0]] = category(central.body, entry[0], entry[1], openCategories);
     });
+    buildAoiControls(categories.aoi);
     DEMOS.forEach(function (demo, index) {
       var key = demo[0];
       var small;
