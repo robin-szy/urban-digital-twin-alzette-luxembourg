@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eddie_weather"
+version = "0.1.0"
+description = "Alzette digital twin: rain per sub-catchment (ERA5-Land and DWD ICON through Open-Meteo) and GR4J river flow at the CAMELS-LUX gauges, computed ahead on a schedule and served by a small data API."
+requires-python = ">=3.11"
+# Loose minimums only: EDDIE's environment.yml pins the real versions. No scipy (not in the image).
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "shapely>=2.0",
+    "sqlalchemy>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "flask", "celery"]
+
+[tool.setuptools]
+packages = ["eddie_weather"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
