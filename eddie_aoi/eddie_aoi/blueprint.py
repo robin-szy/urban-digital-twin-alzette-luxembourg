@@ -305,6 +305,7 @@ FOLLOWER_LABELS = {
     "eddie_water_fees.tasks.compute_water_fees": "Water fees",
     "eddie_flood_costs.tasks.load_cached_for_current_reach": "Flood depths and costs: earlier result",
     "eddie_flood_costs.tasks.recompute_for_current_reach": "Flood depths and flood costs: fresh run",
+    "eddie_precip_interpolation.tasks.derive_precipitation": "Rain (latest)",
 }
 
 
@@ -329,6 +330,9 @@ def _follower_summary(result, task: str) -> str | None:
         if count(value.get("costs")) is not None:
             parts.append(f"costs for {count(value['costs']):,} buildings")
         return ", ".join(parts) or None
+    if task.endswith("derive_precipitation") and value.get("rows_written") is not None:
+        when = str(value.get("timestamp", ""))[:16].replace("T", " ")
+        return f"{value['rows_written']:,} cells of 500 m, rain at {when} UTC"
     if value.get("buildings") is not None:
         text = f"{value['buildings']:,} buildings"
         if value.get("est_population") is not None:
@@ -370,6 +374,9 @@ def _follower_state(result, task: str, reach_id: str = "") -> tuple[str, str | N
         # km 35-50 damage for the buildings inside this reach only (task 8.10 stand-in).
         return "partial", ("Flood depths computed for this reach. Flood costs: the km 35-50 run, "
                            "shown only for its buildings inside this reach; the others are not computed.")
+    if task.endswith("derive_precipitation") and value.get("degraded"):
+        return "ready", ("Area: a 5 km buffer around the reach, standing in for its watersheds "
+                         "until a watershed layer is supplied.")
     if value.get("tariff_note"):
         return "partial", f"Scenario 1 {value['tariff_note']}"
     return "ready", None

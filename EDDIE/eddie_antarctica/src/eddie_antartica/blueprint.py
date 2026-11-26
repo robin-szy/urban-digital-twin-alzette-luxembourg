@@ -225,38 +225,39 @@ def load_precipitation_period():
         # 2. Count already interpolated timestamps
         # ----------------------------------------------------
 
-        cache_exists_query = text(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.tables
-                WHERE
-                    table_schema = 'public'
-                    AND table_name =
-                        'precipitation_interpolated_history'
-            )
-            """
-        )
+        # AOI change (Robin, 2026-11-26, task 9.4): a period counts as already computed only
+        # for the CURRENT area. The history of every area is stored in
+        # precipitation_interpolated_history_by_reach (eddie_precip_interpolation/aoi_scope.py),
+        # each row stamped with its reach, variant and degraded state; counting all rows, as
+        # before, would report a period computed for another area as available.
+        from eddie_base_data.query import resolve_aoi
+        from eddie_precip_interpolation.aoi_scope import DATASET, HISTORY_STORE
 
         cache_exists = conn.execute(
-            cache_exists_query
+            text("SELECT to_regclass(:name) IS NOT NULL"),
+            {"name": f"public.{HISTORY_STORE}"},
         ).scalar_one()
 
         cached_count = 0
 
         if cache_exists:
 
+            scope = resolve_aoi(conn, DATASET)
+
             cached_query = text(
-                """
+                f"""
                 SELECT COUNT(
                     DISTINCT datetime
                 )
-                FROM precipitation_interpolated_history
+                FROM {HISTORY_STORE}
                 WHERE datetime
                     BETWEEN
                     CAST(:start_iso AS timestamptz)
                     AND
                     CAST(:end_iso AS timestamptz)
+                    AND reach_id = :reach_id
+                    AND variant_key = :variant_key
+                    AND degraded = :degraded
                 """
             )
 
@@ -265,6 +266,9 @@ def load_precipitation_period():
                 {
                     "start_iso": start_iso,
                     "end_iso": end_iso,
+                    "reach_id": scope.reach_id,
+                    "variant_key": scope.variant_key,
+                    "degraded": bool(scope.degraded),
                 },
             ).scalar_one()
 

@@ -4,7 +4,7 @@ import eddie.geoserver as gs
 from eddie.digitaltwin import setup_environment
 from eddie.tasks import app
 
-from eddie_precip_interpolation import db
+from eddie_precip_interpolation import aoi_scope, db
 from eddie_precip_interpolation.interpolate import IDWConfig, idw_grid
 
 
@@ -14,10 +14,13 @@ from eddie_precip_interpolation.interpolate import IDWConfig, idw_grid
 
 OBSERVATIONS_TABLE = "weather_observations"
 STATIONS_TABLE = "weather_stations"
-AOI_TABLE = "aoi_alzette_35_50_300m"
+# AOI change (Robin, 2026-11-26): AOI_TABLE = "aoi_alzette_35_50_300m" is no longer read.
+# The area is the current reach's "precipitation" binding from the AOI module (aoi_scope.py).
 
 OUTPUT_TABLE = "precipitation_interpolated_latest"
-HISTORY_TABLE = "precipitation_interpolated_history"
+# AOI change: the history of every area is stored here; the old name is now a view of the
+# current area, which GeoServer publishes as before (aoi_scope.HISTORY_VIEW).
+HISTORY_TABLE = aoi_scope.HISTORY_STORE
 
 
 # ============================================================
@@ -33,6 +36,10 @@ IDW_CONFIG = IDWConfig(
     fallback_radius_m=None,
     metric_crs="EPSG:2169",
 )
+
+# AOI change (Robin, 2026-11-26): the AOI area is ~20x larger than the old band, so its grid uses
+# 500 m cells; everything else is IDW_CONFIG unchanged (see aoi_scope.py).
+AOI_IDW_CONFIG = aoi_scope.aoi_config(IDW_CONFIG)
 
 
 def _latest_usable_timestamp(
@@ -164,15 +171,8 @@ def derive_precipitation(timestamp_iso=None) -> dict:
         # 4. Read AOI
         # ----------------------------------------------------
 
-        aoi_gdf = db.read_aoi(
-            conn,
-            AOI_TABLE,
-        )
-
-        if aoi_gdf.empty:
-            raise RuntimeError(
-                f"AOI table '{AOI_TABLE}' is empty."
-            )
+        # AOI change: the current reach's area, was db.read_aoi(conn, AOI_TABLE).
+        aoi_gdf, scope = aoi_scope.current_aoi(conn)
 
         # ----------------------------------------------------
         # 5. Run IDW precipitation + quality model
@@ -183,7 +183,7 @@ def derive_precipitation(timestamp_iso=None) -> dict:
             observations_df=observations_df,
             aoi_gdf=aoi_gdf,
             timestamp=timestamp,
-            config=IDW_CONFIG,
+            config=AOI_IDW_CONFIG,  # AOI change: 500 m cells
         )
 
         # ----------------------------------------------------
@@ -200,6 +200,7 @@ def derive_precipitation(timestamp_iso=None) -> dict:
             result_gdf,
             OUTPUT_TABLE,
         )
+        aoi_scope.stamp_latest(conn, OUTPUT_TABLE, scope)  # AOI change: which area it shows
 
         # ----------------------------------------------------
         # 7. Publish through GeoServer
@@ -239,6 +240,9 @@ def derive_precipitation(timestamp_iso=None) -> dict:
     return {
         "timestamp": timestamp.isoformat(),
         "rows_written": rows_written,
+        "reach_id": scope.reach_id,  # AOI change
+        "variant_key": scope.variant_key,
+        "degraded": scope.degraded,
         "layer": OUTPUT_TABLE,
         "quality": quality_counts,
         "spatial_status": spatial_counts,
@@ -313,17 +317,15 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
         stations_gdf = db.read_station_geometries(
             conn, STATIONS_TABLE
         )
-        aoi_gdf = db.read_aoi(conn, AOI_TABLE)
+        # AOI change: the current reach's area, was db.read_aoi(conn, AOI_TABLE).
+        aoi_gdf, scope = aoi_scope.current_aoi(conn)
 
-        if aoi_gdf.empty:
-            raise RuntimeError(f"AOI table '{AOI_TABLE}' is empty.")
-
-        aoi_metric = _to_metric(aoi_gdf, IDW_CONFIG.metric_crs)
+        aoi_metric = _to_metric(aoi_gdf, AOI_IDW_CONFIG.metric_crs)
 
         grid_gdf = build_grid(
             aoi_metric,
-            IDW_CONFIG.resolution_m,
-            IDW_CONFIG.metric_crs,
+            AOI_IDW_CONFIG.resolution_m,  # AOI change: 500 m cells
+            AOI_IDW_CONFIG.metric_crs,
         )
 
         if grid_gdf.empty:
@@ -332,9 +334,8 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
         expected_cells = len(grid_gdf)
 
         # 3. Ensure the history table exists.
-        db.ensure_interpolated_history_table(
-            conn, HISTORY_TABLE
-        )
+        # AOI change: also migrates the old table once and refreshes the published view.
+        aoi_scope.prepare_history(conn, db.ensure_interpolated_history_table)
 
         history_table = db._interpolated_history_table(
             HISTORY_TABLE
@@ -354,6 +355,8 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
                 timestamps.min().to_pydatetime(),
                 history_table.c.datetime <=
                 timestamps.max().to_pydatetime(),
+                # AOI change: only surfaces of this very area count as already computed.
+                aoi_scope.scope_where(history_table, scope),
             )
             .group_by(history_table.c.datetime)
         )
@@ -394,7 +397,7 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
                     observations_df=observations_needed,
                     aoi_gdf=aoi_metric,
                     timestamp=timestamp,
-                    config=IDW_CONFIG,
+                    config=AOI_IDW_CONFIG,  # AOI change: 500 m cells
                     grid_gdf=grid_gdf,
                 )
 
@@ -402,6 +405,7 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
                     conn,
                     result_gdf,
                     HISTORY_TABLE,
+                    scope,  # AOI change: stamped on every row
                 )
 
             # Publish only when new surfaces were generated.
@@ -417,7 +421,7 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
                 conn,
                 workspace_name,
                 data_store,
-                HISTORY_TABLE,
+                aoi_scope.HISTORY_VIEW,  # AOI change: the published name, now the view
             )
 
     return {
@@ -431,7 +435,9 @@ def derive_precipitation_history(start_iso=None, end_iso=None) -> dict:
         "rows_written": rows_written,
         "first_timestamp": timestamps.min().isoformat(),
         "last_timestamp": timestamps.max().isoformat(),
-        "layer": HISTORY_TABLE,
+        "layer": aoi_scope.HISTORY_VIEW,  # AOI change
+        "reach_id": scope.reach_id,
+        "variant_key": scope.variant_key,
     }
 
 @app.task(
@@ -532,7 +538,12 @@ def derive_live_precipitation(dry_run=False):
             sa.text("SELECT MAX(datetime) FROM precip_live_test")
         ).scalar()
 
-        if stored is not None:
+        # AOI change: the area of the current reach (was db.read_aoi(conn, AOI_TABLE) below).
+        aoi_gdf, scope = aoi_scope.current_aoi(conn)
+        # AOI change: a stored surface of ANOTHER area is replaced even without a newer reading.
+        same_area = aoi_scope.latest_reach(conn, target_table) == scope.reach_id
+
+        if stored is not None and same_area:
             previous = pd.to_datetime(stored, utc=True)
             if timestamp <= previous:
                 return {
@@ -544,17 +555,12 @@ def derive_live_precipitation(dry_run=False):
         stations_gdf = db.read_station_geometries(
             conn, STATIONS_TABLE
         )
-        aoi_gdf = db.read_aoi(conn, AOI_TABLE)
-
-        if aoi_gdf.empty:
-            raise RuntimeError("Alzette AOI is empty.")
-
         result = idw_grid(
             stations_gdf=stations_gdf,
             observations_df=current,
             aoi_gdf=aoi_gdf,
             timestamp=timestamp,
-            config=IDW_CONFIG,
+            config=AOI_IDW_CONFIG,  # AOI change: 500 m cells
         )
 
         if result.empty:
@@ -579,6 +585,7 @@ def derive_live_precipitation(dry_run=False):
         db.replace_interpolated_latest(
             conn, result, target_table
         )
+        aoi_scope.stamp_latest(conn, target_table, scope)  # AOI change
 
         return report
 

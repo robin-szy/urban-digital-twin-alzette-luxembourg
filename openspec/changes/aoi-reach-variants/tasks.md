@@ -80,16 +80,23 @@
 
 > `eddie_base_data.publish.write_derived` already stamps `reach_id`, `variant_key` and `degraded` on tables written through it, so `building_population` is attributed today. The tasks below are for the precipitation and water-level tables and are deferred with 10.1 and 10.2.
 
-- [ ] 9.1 Add reach, variant and degraded columns to `precipitation_interpolated_history` and the other derived tables in `eddie_precip_interpolation/db.py` and the water-level tables; verify the migration applies and the columns are present
-- [ ] 9.2 Backfill existing precipitation and water-level rows with the Alzette 35–50 reach id; verify a query reports zero rows left unattributed
-- [ ] 9.3 Stamp reach, variant and degraded on every derived row at write time; verify an integration test that rows written during a degraded resolution still carry the degraded marker when read back
-- [ ] 9.4 Update the reuse check in `blueprint.py` and every other cache-hit query to match on reach and variant, not only on the dataset's own keys; verify tests that the same period for a different reach reports not-available, the same period for the same reach reports available, and a previously degraded period for the same reach reports not-available once the real source exists
-- [ ] 9.5 Reject serving unattributed derived data as belonging to the current reach; verify a test that an untagged row is not returned for a reach query
+- [x] 9.1 Add reach, variant and degraded columns to `precipitation_interpolated_history` and the other derived tables in `eddie_precip_interpolation/db.py` and the water-level tables; verify the migration applies and the columns are present
+  - *Done 2026-11-26:* precipitation: `reach_id`, `variant_key`, `degraded`, `degraded_reason` on the history (now stored in `precipitation_interpolated_history_by_reach`; the old name is a view of the current reach) and on the latest tables (`precipitation_interpolated_latest`, `precip_live_test`). **Water level deliberately not attributed** (Robin's decision): gauge readings are measurements of a place, the same for every reach; only the gauge selection follows the reach (10.2).
+- [x] 9.2 Backfill existing precipitation and water-level rows with the Alzette 35–50 reach id; verify a query reports zero rows left unattributed
+  - *Done 2026-11-26:* the 814,086 existing history rows attributed to `alzette_035000_050000` / variant `aoi_alzette_35_50_300m` (the area they were computed over); 0 unattributed rows left. Water level: not applicable (9.1).
+- [x] 9.3 Stamp reach, variant and degraded on every derived row at write time; verify an integration test that rows written during a degraded resolution still carry the degraded marker when read back
+  - *Done 2026-11-26:* every history row is stamped at write time (`db.write_interpolated_history(..., scope)`), the latest tables after each replace (`aoi_scope.stamp_latest`); verified: km 40–48 rows carry `watersheds`, degraded = true (5 km stand-in).
+- [x] 9.4 Update the reuse check in `blueprint.py` and every other cache-hit query to match on reach and variant, not only on the dataset's own keys; verify tests that the same period for a different reach reports not-available, the same period for the same reach reports available, and a previously degraded period for the same reach reports not-available once the real source exists
+  - *Done 2026-11-26:* both reuse checks match on reach, variant and degraded state: EDDIE's `/load-precipitation-period` (`src/eddie_antartica/blueprint.py`, backend image rebuilt) and the task's own per-timestamp cache. Verified live: a day stored for km 35–50 reported `already_cached: 0` for km 40–48, was computed, then reported `cached` on the second request. Matching on `degraded` makes stand-in surfaces stale once a real watershed layer exists.
+- [x] 9.5 Reject serving unattributed derived data as belonging to the current reach; verify a test that an untagged row is not returned for a reach query
+  - *Done 2026-11-26:* `reach_id`/`variant_key`/`degraded` are NOT NULL on the store; the published names (`precipitation_interpolated_history`, and the older `_wms` view) show only the current reach's rows of the bound variant. GeoServer serves the views unchanged (TIME dimension lists the current reach's timestamps only; GetMap 200).
 
 ## 10. Repoint the consumers
 
-- [ ] 10.1 *(deferred)* Replace `AOI_TABLE` in `eddie_precip_interpolation/tasks.py` with a resolver call; verify the precipitation task runs against the fallback reach and its output matches the pre-migration result for the same area
-- [ ] 10.2 *(deferred)* Replace `AOI_TABLE` and `AOI_STATION_TOLERANCE_M` in `eddie_water_level/tasks.py` with a resolver call bound to `buffer(1000)`; verify the same gauge set is selected as before the change
+- [x] 10.1 *(deferred)* Replace `AOI_TABLE` in `eddie_precip_interpolation/tasks.py` with a resolver call; verify the precipitation task runs against the fallback reach and its output matches the pre-migration result for the same area
+  - *Done 2026-11-26 (no longer deferred):* all three tasks read `aoi_scope.current_aoi()` (the current reach's `watersheds`, today the 5 km stand-in) instead of `AOI_TABLE`; **grid at 500 m** for this area (Robin's decision: 174 km² at 100 m would be ~17,000 cells and ~7 GB of history per reach). The output therefore does not match the old 100 m / 300 m-band result cell for cell, by design. `derive_precipitation` follows every switch (FOLLOWERS, banner "Rain (latest)"); history per reach on request. Verified on km 40–48 (597 cells) and km 47–49 (439 cells).
+- [x] 10.2 *(deferred)* Replace `AOI_TABLE` and `AOI_STATION_TOLERANCE_M` in `eddie_water_level/tasks.py` with a resolver call bound to `buffer(1000)`; verify the same gauge set is selected as before the change
+  - *Done 2026-11-26 (no longer deferred):* `_station_near_aoi` uses the reach's `water_gauges` area (`buffer(1000)`); for km 35–50 it selects the same gauges as before (Pfaffenthal, Hesperange); km 40–48 selects Hesperange. Pfaffenthal and Hesperange are always loaded as well, because `derive_water_level_interpolation` (km 35–50) is built between them.
 - [x] 10.3a Send `eddie_aoi.tasks.ensure_fallback_reach` from the worker startup hook in `EDDIE/eddie_antarctica/src/eddie_antartica/tasks.py`, alongside the existing static ingest; verify on a fresh database that the worker starts, logs the fallback reach it built, and that `reach_cache` holds it pinned
 - [ ] 10.3b *(deferred)* Stop reading `selected_polygon.geojson` for `add_base_data_to_db` at `EDDIE/eddie_antarctica/src/eddie_antartica/tasks.py:50`; deferred because it widens EDDIE's own static layers (3D buildings, land use) from the km 46.3–48.3 rectangle to km 35–50 — see design, Open Questions
 
@@ -164,8 +171,10 @@
 ## Where we stopped (2026-11-26)
 
 Everything in sections 1–8, 11, 12 and 14 that is not marked deferred is done (on `main`).
-Next: sections 9 and 10 (precipitation and water level follow the AOI; attribution of derived rows).
-Still deferred: 8.4, 10.3b, 13, 14.3.
+Sections 9 and 10 done the same day (precipitation follows the AOI, attributed and reused per
+reach; water-level gauges selected by the reach). Still deferred: 8.4, 10.3b (EDDIE's static
+ingest still reads `selected_polygon.geojson`), 13, and 14.3 (blocked by 10.3b only: no
+`AOI_TABLE` / `AOI_STATION_TOLERANCE_M` is read any more).
 
 ## Where we stopped (2026-11-20)
 

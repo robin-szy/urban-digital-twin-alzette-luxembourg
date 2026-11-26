@@ -11,7 +11,9 @@ from eddie_precip_interpolation.transform import PRECIPITATION_VARIABLE
 # HISTORICAL IDW PRECIPITATION
 # ============================================================
 
-HISTORY_UNIQUE_KEY = ["grid_id", "datetime"]
+# AOI change (Robin, 2026-11-26): the same cell and time can now exist once per area (see
+# aoi_scope.py), so the unique key includes the scope. Was ["grid_id", "datetime"].
+HISTORY_UNIQUE_KEY = ["reach_id", "variant_key", "grid_id", "datetime"]
 
 
 def _interpolated_history_table(table_name: str) -> sa.Table:
@@ -54,6 +56,12 @@ def _interpolated_history_table(table_name: str) -> sa.Table:
             Geometry("GEOMETRY", srid=2169),
         ),
 
+        # AOI change (Robin, 2026-11-26): which area the surface was computed for (aoi_scope.py).
+        sa.Column("reach_id", sa.Text, nullable=False),
+        sa.Column("variant_key", sa.Text, nullable=False),
+        sa.Column("degraded", sa.Boolean, nullable=False),
+        sa.Column("degraded_reason", sa.Text),
+
         sa.UniqueConstraint(
             *HISTORY_UNIQUE_KEY,
             name=f"{table_name}_unique_key",
@@ -77,12 +85,18 @@ def write_interpolated_history(
     conn: Connection,
     result_gdf: gpd.GeoDataFrame,
     table_name: str,
+    scope,
 ) -> int:
     """
     Store one IDW surface in history.
 
     If that timestamp already exists, replace only that timestamp.
+
+    AOI change (Robin, 2026-11-26): ``scope`` (an AoiScope, see aoi_scope.py) is the area the
+    surface was computed for; it is stamped on every row, and only that area's surface of this
+    timestamp is replaced - the same timestamp of other areas stays.
     """
+    from eddie_precip_interpolation.aoi_scope import scope_values, scope_where
 
     table = _interpolated_history_table(table_name)
 
@@ -93,12 +107,14 @@ def write_interpolated_history(
         result_gdf.iloc[0]["datetime"]
     ).to_pydatetime()
 
-    # Replace this timestamp only.
+    # Replace this timestamp only (AOI change: and only for this area).
     conn.execute(
         sa.delete(table).where(
-            table.c.datetime == timestamp
+            table.c.datetime == timestamp,
+            scope_where(table, scope),
         )
     )
+    attribution = scope_values(scope)
 
     rows = []
 
@@ -146,6 +162,8 @@ def write_interpolated_history(
 
                 "geometry":
                     from_shape(row.geometry, srid=2169),
+
+                **attribution,  # AOI change: the area of this surface
             }
         )
 

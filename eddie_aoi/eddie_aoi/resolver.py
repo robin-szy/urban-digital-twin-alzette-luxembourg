@@ -84,6 +84,10 @@ FOLLOWERS: dict[str, str] = {
     # 2026-11-26: first the newest earlier run of this reach is published from disk (seconds),
     # then the fresh recompute follows in THEN below and replaces it.
     "flood_costs": "eddie_flood_costs.tasks.load_cached_for_current_reach",
+    # 2026-11-26 (tasks 9-10): the latest rain grid over the reach's watersheds area. Its
+    # reuse checks match on reach, variant and degraded state (eddie_precip_interpolation/
+    # aoi_scope.py), so it may follow. History is computed per reach only on request.
+    "precipitation": "eddie_precip_interpolation.tasks.derive_precipitation",
 }
 
 #: follower dataset -> tasks that must run AFTER its follower task has finished, in order,

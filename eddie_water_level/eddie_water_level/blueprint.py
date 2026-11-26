@@ -498,6 +498,10 @@ def _water_surface_init(
             "layers": "input_layers:precip_live_test",
             "show": True,
             "opacity": 0.65,
+            # AOI change (Robin, 2026-11-26): GeoServer's extent for this layer is still the old
+            # km 35-50 band; rain now covers the current reach's 5 km area, and Terria requests
+            # tiles only inside the item's extent. Luxembourg, as for the water-fee layer.
+            "rectangle": {"west": 5.73, "south": 49.44, "east": 6.53, "north": 50.19},
         })
 
         workbench.append(rainfall_id)
@@ -513,6 +517,16 @@ def _water_surface_init(
             "layers": "precipitation_interpolated_history",
             "fromContinuous": "nearest",
             "opacity": 0.65,
+            # Fix (Robin, 2026-11-26): pin the item to the replayed day. Without these, Terria
+            # takes every time step GeoServer lists for the layer (all days computed so far) and
+            # starts its clock at the one nearest to NOW, so the play button replayed the latest
+            # day instead of the selected one. This item drives the clock (first in the timeline).
+            "startTime": f"{czml_query['date']}T00:00:00Z",
+            "stopTime": f"{czml_query['date']}T23:59:59Z",
+            "currentTime": f"{czml_query['date']}T00:00:00Z",
+            "initialTimeSource": "start",
+            # AOI change: Luxembourg, not GeoServer's old km 35-50 extent (see the live item above).
+            "rectangle": {"west": 5.73, "south": 49.44, "east": 6.53, "north": 50.19},
         })
         workbench.append(rainfall_id)
         timeline.append(rainfall_id)

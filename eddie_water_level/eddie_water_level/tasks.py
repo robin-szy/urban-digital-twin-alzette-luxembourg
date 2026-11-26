@@ -34,8 +34,13 @@ API_ROOT = "https://heichwaasser.lu/api/v1"
 # Alzette river ID in the Héichwaasser API
 ALZETTE_RIVER_ID = 17
 
-# Existing common AOI
-AOI_TABLE = "aoi_alzette_35_50_300m"
+# AOI change (Robin, 2026-11-26, task 10.2): AOI_TABLE = "aoi_alzette_35_50_300m" and
+# AOI_STATION_TOLERANCE_M = 1000.0 are gone. Gauges are selected inside the current reach's
+# "water_gauges" area from the AOI module: a 1 km buffer around the reach's centerline
+# (eddie_aoi.resolver.BINDINGS). For km 35-50 it selects the same gauges as before
+# (Pfaffenthal, Hesperange). The readings themselves are not stamped with the reach: a gauge
+# reading is a measurement of a place and is the same for every reach.
+AOI_DATASET = "water_gauges"
 
 # Historical measurements
 HISTORY_TABLE = "water_level_history"
@@ -43,9 +48,6 @@ HISTORY_TABLE = "water_level_history"
 # GeoServer-friendly temporal view
 WMS_VIEW = "water_level_history_wms"
 
-# A gauge may be slightly outside the 300 m corridor because
-# of station coordinates / river-centreline differences.
-AOI_STATION_TOLERANCE_M = 1000.0
 
 
 # ============================================================
@@ -306,34 +308,28 @@ def _station_near_aoi(
     latitude: float,
 ) -> bool:
     """
-    Return True if a gauge is inside or within the configured
-    tolerance of the Alzette AOI.
+    Return True if a gauge lies in the current reach's gauge area.
+
+    AOI change (Robin, 2026-11-26): was "within AOI_STATION_TOLERANCE_M of AOI_TABLE"; the
+    1 km is now part of the area itself (see AOI_DATASET above).
     """
+    from eddie_base_data.query import resolve_aoi
+
+    scope = resolve_aoi(conn, AOI_DATASET)
 
     query = text(
-        f"""
-        SELECT EXISTS (
-
-            SELECT 1
-
-            FROM {AOI_TABLE}
-
-            WHERE ST_DWithin(
-
-                geometry,
-
-                ST_Transform(
-                    ST_SetSRID(
-                        ST_Point(
-                            :longitude,
-                            :latitude
-                        ),
-                        4326
+        """
+        SELECT ST_Intersects(
+            ST_GeomFromText(:area, 2169),
+            ST_Transform(
+                ST_SetSRID(
+                    ST_Point(
+                        :longitude,
+                        :latitude
                     ),
-                    2169
+                    4326
                 ),
-
-                :tolerance
+                2169
             )
         )
         """
@@ -343,9 +339,9 @@ def _station_near_aoi(
         conn.execute(
             query,
             {
+                "area": scope.geometry.wkt,
                 "longitude": longitude,
                 "latitude": latitude,
-                "tolerance": AOI_STATION_TOLERANCE_M,
             },
         ).scalar_one()
     )
@@ -575,7 +571,10 @@ def load_water_level_period(
                 station["latitude"]
             )
 
-            if _station_near_aoi(
+            # AOI change (Robin, 2026-11-26): the gauges in the current reach's area, plus always
+            # Pfaffenthal and Hesperange: derive_water_level_interpolation (km 35-50) is built
+            # between those two, so a reach without one of them must still load its readings.
+            if int(station["id"]) in (PFAFFENTHAL_ID, HESPERANGE_ID) or _station_near_aoi(
                 conn,
                 longitude,
                 latitude,

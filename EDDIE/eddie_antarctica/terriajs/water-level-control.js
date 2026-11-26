@@ -1627,7 +1627,9 @@
       });
   }
 
-  function prepareRain(day, fetched) {
+  // afterSwitch (2026-11-26): called after an area switch; a day already computed for the new area
+  // is then loaded again under a new layer id (its tiles and time steps belong to the new area).
+  function prepareRain(day, fetched, afterSwitch) {
     fetch(BACKEND_URL + "/load-precipitation-period", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1637,6 +1639,12 @@
       .then(function (data) {
         if (data.status === "cached") {
           setRainInfo("Rainfall of " + day + " shown (" + data.timestamps + " time steps).");
+          if (afterSwitch && replayDate === day) {
+            rainVersion += 1;
+            if (mapLayers.rain) {
+              reloadView();
+            }
+          }
         } else if (data.status === "no_data" && !fetched) {
           // Not fetched yet: get the day's observations from ASTA, then interpolate them.
           setRainInfo("Fetching the rain observations of " + day + "...");
@@ -1819,6 +1827,13 @@
       return;
     }
     (t.workbench.items || []).forEach(function (item) {
+      // Not the replayed day's rain (2026-11-26): its time steps belong to the area it was computed
+      // for, so re-requesting its tiles after a switch asks GeoServer for times the new area does
+      // not have yet ("Unknown Tile Error"). The replay replaces that layer itself (see prepareRain
+      // in refreshAoiStatus).
+      if (typeof item.uniqueId === "string" && item.uniqueId.indexOf("alzette-rainfall-day-") === 0) {
+        return;
+      }
       if (item.type === "wms" && typeof item.url === "string" && item.url.indexOf("/geoserver/input_layers") >= 0 &&
           item.setTrait) {
         var parameters = Object.assign({}, item.parameters || {}, { aoi: version });
@@ -1853,6 +1868,14 @@
         }
         if ((reachChanged || firstStatus) && ui.loadAoiReaches) {
           ui.loadAoiReaches();
+        }
+        if (reachChanged && replayDate && mapLayers.rain) {
+          // AOI fix (2026-11-26): rain history is stored per area, so a day replayed for the old
+          // area does not exist yet for the new one (GeoServer then refuses the time and Terria
+          // hides the layer). Compute it for the new area as when the day is chosen. The rain
+          // version (a new layer id) is raised only once the day exists for the new area, so the
+          // map never asks for it earlier; until then the old layer stays as it is.
+          prepareRain(replayDate, false, true);
         }
         if (reachChanged) {
           followAoiReach(data.reach_id);
