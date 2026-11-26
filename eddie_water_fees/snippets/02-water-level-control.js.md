@@ -21,7 +21,7 @@ these two lines (around line 2504 in the file as it is now):
     // flood-risk levy, water-quality surcharge, consumption), from the eddie_water_fees
     // plugin. It writes columns on building_population, so the result is drawn by the same
     // "Water fees (model result)" layer: tick it under River.
-    var fees15 = section(demos.fees, "15-minute tariff and rain");
+    var fees15 = section(demos.fees, "All five scenarios (one run)");
     var fees15Table = element("table");
 
     function fees15Text(id, placeholder) {
@@ -32,12 +32,36 @@ these two lines (around line 2504 in the file as it is now):
       return input;
     }
 
-    var gaugeFrom = fees15Text("water-level-control-fees15-from", "empty = 7 days before the end");
+    // Scenario 3-5 parameters. Before this, only the backend defaults could be used
+    // (150 EUR at 50 m, 2.5 EUR/m2, 160 l/person, 0.005 EUR/l, 80 % usable floor space).
+    function fees15Number(id, value, min, max, step) {
+      var input = document.createElement("input");
+      input.type = "number";
+      input.id = id;
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(step);
+      input.value = String(value);
+      return input;
+    }
+
+    // One heading per scenario: each group of fields sits under the scenario it drives.
+    function fees15Heading(text) {
+      var tr = element("tr");
+      var td = element("td", null, text);
+      td.colSpan = 3;
+      td.style.cssText = "padding:9px 0 3px;font-weight:600;font-size:.85em";
+      tr.appendChild(td);
+      fees15Table.appendChild(tr);
+    }
+
+    fees15Heading("Scenario 1 · river water tariff (the season)");
+    var gaugeFrom = fees15Text("water-level-control-fees15-from", "not used: scenario 1 runs the season");
     settingRow(fees15Table, "Gauges from (UTC)", gaugeFrom, "");
-    var gaugeTo = fees15Text("water-level-control-fees15-to", "empty = now");
+    var gaugeTo = fees15Text("water-level-control-fees15-to", "not used: scenario 1 runs the season");
     settingRow(fees15Table, "Gauges to (UTC)", gaugeTo, "");
 
-    var fee15Share = rangeSlider("water-level-control-fees15-percentage", 0, 1, 0.01, 0.1, percent, function () {});
+    var fee15Share = rangeSlider("water-level-control-fees15-percentage", 0, 1, 0.01, 0.04, percent, function () {});
     settingRow(fees15Table, "Extra share", fee15Share.input, fee15Share.value);
 
     var fee15Price = document.createElement("input");
@@ -48,6 +72,7 @@ these two lines (around line 2504 in the file as it is now):
     fee15Price.value = "7";
     settingRow(fees15Table, "Tariff", fee15Price, "€/m³");
 
+    fees15Heading("Scenario 2 · seasonal rain on the roofs");
     var rainSeason = document.createElement("select");
     ["winter", "spring", "summer", "autumn"].forEach(function (name) {
       rainSeason.appendChild(element("option", null, name));
@@ -70,6 +95,24 @@ these two lines (around line 2504 in the file as it is now):
     rainPrice.step = "0.5";
     rainPrice.value = "4.5";
     settingRow(fees15Table, "Rain fee", rainPrice, "€/m³");
+
+    fees15Heading("Scenario 3 · flood-risk proximity levy");
+    var floodDistance = fees15Number("water-level-control-fees15-distance", 50, 0, 10000, 1);
+    settingRow(fees15Table, "Flood zone", floodDistance, "m");
+    var floodFee = fees15Number("water-level-control-fees15-flood-fee", 150, 0, 1000000, 5);
+    settingRow(fees15Table, "Flood levy", floodFee, "€");
+
+    fees15Heading("Scenario 4 · water-quality surcharge");
+    var qualityPrice = fees15Number("water-level-control-fees15-quality-price", 2.5, 0, 1000, 0.1);
+    settingRow(fees15Table, "Quality fee", qualityPrice, "€/m²");
+
+    fees15Heading("Scenario 5 · water consumption");
+    var litersPerson = fees15Number("water-level-control-fees15-liters", 160, 0, 10000, 10);
+    settingRow(fees15Table, "Use per person", litersPerson, "l");
+    var literPrice = fees15Number("water-level-control-fees15-liter-price", 0.005, 0, 100, 0.001);
+    settingRow(fees15Table, "Use fee", literPrice, "€/l");
+    var usableSpace = fees15Number("water-level-control-fees15-usable", 0.8, 0, 1, 0.05);
+    settingRow(fees15Table, "Usable floor space", usableSpace, "0-1");
 
     var rainNormals = checkbox("water-level-control-fees15-normals", "Use 1991-2020 normals (offline)", function () {});
     fees15.appendChild(fees15Table);
@@ -94,7 +137,7 @@ these two lines (around line 2504 in the file as it is now):
         .catch(function () { fees15Note.textContent = "Could not reach the backend."; });
     }
 
-    fees15.appendChild(button("Run 15-minute tariff + rain", function () {
+    fees15.appendChild(button("Run the five scenarios", function () {
       fees15Note.textContent = "Running the model...";
       fetch(BACKEND_URL + "/water-fees/run", {
         method: "POST",
@@ -103,6 +146,12 @@ these two lines (around line 2504 in the file as it is now):
           percentage: Number(fee15Share.input.value),
           unit_price: Number(fee15Price.value),
           rainwater_unit_price: Number(rainPrice.value),
+          distance_threshold: Number(floodDistance.value),
+          flood_risk_base_fee: Number(floodFee.value),
+          quality_unit_price: Number(qualityPrice.value),
+          liters_per_person: Number(litersPerson.value),
+          unit_price_per_liter: Number(literPrice.value),
+          usable_space_pct: Number(usableSpace.value),
           gauge_start: gaugeFrom.value || null,
           gauge_end: gaugeTo.value || null,
           season: rainSeason.value,

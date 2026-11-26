@@ -47,7 +47,7 @@ from .scenarios import (
     flood_risk_table,
     water_quality_table,
 )
-from .seasonal_rain import SEASONS, normal_rain_mm, seasonal_rain_mm
+from .seasonal_rain import SEASONS, normal_rain_mm, season_dates, seasonal_rain_mm
 
 TABLE = "building_population"
 PUBLISH_SRID = 4326
@@ -70,6 +70,12 @@ COLUMNS: dict[str, str] = {
     # AOI change (Robin, 2026-11-25): why scenario 1 is missing or only partial for this
     # reach (the three gauges cover Alzette km 35.0-54.34 only). NULL when fully computed.
     "tariff_note_15min": "text",
+    # Scenario 1, the same gauge series summed over the season: what the building owes
+    # for the whole period, the river volume measured over it, and the season's pool.
+    "water_fee_season_eur": "double precision",
+    "allocated_water_volume_season_m3": "double precision",
+    "tariff_total_eur_season": "double precision",
+    "water_volume_season_m3": "double precision",
     # Scenario 2, seasonal rain on the roofs.
     "rainwater_area_share": "double precision",
     "allocated_rainwater_volume_m3": "double precision",
@@ -185,7 +191,8 @@ def not_computed_fee_table(buildings: gpd.GeoDataFrame, note: str) -> pd.DataFra
     table = pd.DataFrame({"building_id": buildings[id_column].to_numpy()})
     for name in ("water_area_share_15min", "allocated_water_volume_15min_m3", "water_fee_15min_mean_eur",
                  "water_fee_15min_min_eur", "water_fee_15min_max_eur", "tariff_mean_eur_15min",
-                 "tariff_intervals_15min"):
+                 "tariff_intervals_15min", "water_fee_season_eur", "allocated_water_volume_season_m3",
+                 "tariff_total_eur_season", "water_volume_season_m3"):
         table[name] = np.full(count, np.nan)
     table["gauge_quality_15min"] = "not computed"
     table["gauge_window_start_utc"] = pd.NaT
@@ -292,7 +299,7 @@ def season_rain(season: str, season_year: int, use_normals: bool) -> tuple[float
 
 @app.task(name="eddie_water_fees.tasks.compute_water_fees")
 def compute_water_fees(
-    percentage: float = 0.10,
+    percentage: float = 0.04,
     unit_price: float = 7.0,
     gauge_start: str | None = None,
     gauge_end: str | None = None,
@@ -300,6 +307,7 @@ def compute_water_fees(
     season: str = "summer",
     season_year: int = 2024,
     use_normals: bool = False,
+    tariff_period: str = "season",
     rainwater_unit_price: float = DEFAULT_RAINWATER_UNIT_PRICE,
     distance_threshold: float = DEFAULT_DISTANCE_THRESHOLD_M,
     flood_risk_base_fee: float = DEFAULT_FLOOD_RISK_BASE_FEE,
@@ -311,6 +319,10 @@ def compute_water_fees(
     variant_key: str | None = None,
 ) -> dict:
     """Add the five water-fee scenarios to one scope's buildings."""
+    tariff_period = str(tariff_period).strip().lower()
+    if tariff_period not in ("season", "window"):
+        raise ValueError('tariff_period must be "season" (the season dates) or "window".')
+
     engine = setup_environment.get_database()
     with engine.connect() as conn:
         reach, variant = resolve_scope(conn, reach_id, variant_key)
@@ -345,7 +357,12 @@ def compute_water_fees(
         if not any(areas.values()):
             raise ValueError("No mapped river surface in any section; check OSM_GPKG.")
 
-        start_ts, end_ts = period(gauge_start, gauge_end)
+        if tariff_period == "season":
+            first_day, last_day = season_dates(season_year, season.strip().lower())
+            start_ts, end_ts = period(str(first_day), f"{last_day} 23:59")
+        else:
+            start_ts, end_ts = period(gauge_start, gauge_end)
+        print(f" -> Scenario 1 window: {start_ts} to {end_ts} UTC ({tariff_period})")
         readings = load_readings(readings_json, start_ts, end_ts)
         for gauge in GAUGES:
             print(f" -> {gauge.name} (station {gauge.station_id}): {len(readings.get(gauge.station_id, []))} readings")
@@ -381,6 +398,10 @@ def compute_water_fees(
     fee_buildings = int((values["water_area_share_15min"] > 0).sum())
     if mean_tariff is not None:
         print(f" -> Mean tariff {mean_tariff:,.2f} EUR shared by {fee_buildings} non-residential buildings")
+    if series is not None:
+        print(f" -> Season tariff {values['tariff_total_eur_season'].iloc[0]:,.2f} EUR over "
+              f"{values['tariff_intervals_15min'].iloc[0]:.0f} intervals, "
+              f"river volume {values['water_volume_season_m3'].iloc[0]:,.0f} m\u00b3")
     print(f" -> {rain_mm} mm of rain -> {values['rain_volume_m3'].iloc[0]:,.0f} m³, "
           f"{values['rainwater_cost_eur'].sum():,.2f} EUR at {rainwater_unit_price}/m³")
     in_zone = int((values["flood_risk_fee_eur"] > 0).sum())
@@ -405,6 +426,11 @@ def compute_water_fees(
         "gauge_window_start_utc": str(fees["gauge_window_start_utc"].iloc[0]),
         "gauge_window_end_utc": str(fees["gauge_window_end_utc"].iloc[0]),
         "section_areas_m2": {name: round(float(area), 1) for name, area in areas.items()},
+        "tariff_period": tariff_period,
+        "tariff_total_eur_season": (round(float(values["tariff_total_eur_season"].iloc[0]), 2)
+                                    if series is not None else None),
+        "water_volume_season_m3": (round(float(values["water_volume_season_m3"].iloc[0]), 1)
+                                   if series is not None else None),
         "mean_tariff_eur": round(mean_tariff, 2) if mean_tariff is not None else None,
         "min_tariff_eur": round(float(tariffs.min()), 2) if mean_tariff is not None else None,
         "max_tariff_eur": round(float(tariffs.max()), 2) if mean_tariff is not None else None,
@@ -419,7 +445,7 @@ def compute_water_fees(
         "water_consumption_m3": round(float(values["water_consumption_m3"].sum()), 1),
         "water_consumption_cost_eur": round(float(values["water_consumption_cost_eur"].sum()), 2),
         "all_scenarios_eur": round(float(
-            values["water_fee_15min_mean_eur"].sum() + values["rainwater_cost_eur"].sum()
+            values["water_fee_season_eur"].sum() + values["rainwater_cost_eur"].sum()
             + values["flood_risk_fee_eur"].sum() + values["water_quality_charge_eur"].sum()
             + values["water_consumption_cost_eur"].sum()), 2),
         # AOI change: True when scenario 1 is missing or partial, i.e. the total above

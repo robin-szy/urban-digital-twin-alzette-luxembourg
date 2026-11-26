@@ -30,6 +30,8 @@ BUILDING_COLUMNS = (
     "tariff_mean_eur_15min", "tariff_intervals_15min", "gauge_quality_15min",
     "gauge_window_start_utc", "gauge_window_end_utc",
     "tariff_note_15min",  # AOI change (Robin, 2026-11-25): why scenario 1 is missing / partial
+    "water_fee_season_eur", "allocated_water_volume_season_m3",
+    "tariff_total_eur_season", "water_volume_season_m3",
     "rainwater_area_share", "allocated_rainwater_volume_m3", "rainwater_cost_eur",
     "rain_mm_season", "rainwater_unit_price_eur_per_m3", "rain_season", "rain_source",
     "distance_to_river_m", "flood_risk_fee_eur",
@@ -40,7 +42,7 @@ BUILDING_COLUMNS = (
 
 # Parameters the map may set, with their defaults (tasks.compute_water_fees) and limits.
 PARAMETERS = {
-    "percentage": (0.10, 0.0, 1.0),
+    "percentage": (0.04, 0.0, 1.0),
     "unit_price": (7.0, 0.0, 1000.0),
     "rainwater_unit_price": (4.5, 0.0, 1000.0),
     "distance_threshold": (50.0, 0.0, 10000.0),
@@ -58,7 +60,7 @@ def run_water_fees() -> ResponseValue:
     """
     Run the 15-minute gauge tariff and the seasonal-rain fee in the background.
 
-    JSON (all optional): {"percentage": 0.1, "unit_price": 7, "rainwater_unit_price": 4.5,
+    JSON (all optional): {"percentage": 0.04, "unit_price": 7, "rainwater_unit_price": 4.5,
     "gauge_start": "2026-11-20T14:00", "gauge_end": "2026-11-20T18:00", "readings_json": null,
     "season": "summer", "season_year": 2024, "use_normals": false,
     "reach_id": null, "variant_key": null}.
@@ -94,6 +96,9 @@ def run_water_fees() -> ResponseValue:
         value = payload.get(name)
         arguments[name] = str(value) if value not in (None, "") else None
     arguments["use_normals"] = bool(payload.get("use_normals", False))
+    arguments["tariff_period"] = str(payload.get("tariff_period", "season")).strip().lower()
+    if arguments["tariff_period"] not in ("season", "window"):
+        return jsonify({"status": "error", "message": "tariff_period must be season or window."}), BAD_REQUEST
 
     task = compute_water_fees.delay(**arguments)
     return jsonify({"status": "processing", "task_id": task.id, "parameters": arguments}), ACCEPTED
@@ -123,6 +128,9 @@ def water_fees_summary() -> ResponseValue:
                    -- AOI change: no COALESCE, so a reach without scenario 1 gives NULL, not 0;
                    -- tariff_note says why (gauge coverage).
                    SUM(water_fee_15min_mean_eur) AS tariff_total_eur,
+                   SUM(water_fee_season_eur) AS tariff_season_eur,
+                   MAX(tariff_total_eur_season) AS tariff_season_pool_eur,
+                   MAX(water_volume_season_m3) AS water_volume_season_m3,
                    {note_sql} AS tariff_note,
                    MAX(tariff_mean_eur_15min) AS tariff_mean_eur,
                    MIN(water_fee_15min_mean_eur) AS fee_min_eur,
@@ -165,13 +173,18 @@ def _tariff_detail(values: dict) -> str:
     # AOI change: a reach outside the gauge coverage has no tariff; say why instead of the
     # (empty) window. A partly covered reach gets its note appended at the end.
     note = values.get("tariff_note_15min")
-    if values.get("water_fee_15min_mean_eur") is None and note:
+    if (values.get("water_fee_season_eur") is None
+            and values.get("water_fee_15min_mean_eur") is None and note):
         return str(note)
     parts = []
-    if values.get("tariff_intervals_15min"):
-        parts.append(f"mean of {values['tariff_intervals_15min']} intervals")
+    intervals = values.get("tariff_intervals_15min")
+    if intervals:
+        parts.append(f"sum of {intervals} intervals")
     parts.append(f"gauges {stamp(values.get('gauge_window_start_utc'))} to "
                  f"{stamp(values.get('gauge_window_end_utc'))} UTC")
+    volume = _number(values.get("water_volume_season_m3"))
+    if volume is not None:
+        parts.append(f"{volume:,.0f} m\u00b3 of river water in the season")
     if values.get("gauge_quality_15min"):
         parts.append(str(values["gauge_quality_15min"]))
     low = _number(values.get("water_fee_15min_min_eur"))
@@ -206,17 +219,25 @@ def _quality_detail(values: dict) -> str:
     return "; ".join(parts)
 
 
+def _is_residential_building(building_type) -> bool:
+    """Same rule as scenarios.consumption_table: "non-residential" is not residential."""
+    text = ("" if building_type is None else str(building_type)).strip().lower()
+    if text in ("", "nan", "none"):
+        return True
+    return "residential" in text and "non-residential" not in text
+
+
 def _consumption_detail(values: dict) -> str:
     """How the consumption of this building was computed, in one line."""
     parts = []
     volume = _number(values.get("water_consumption_m3"))
     if volume is not None:
         parts.append(f"{volume:,.1f} m\u00b3")
-    population = _number(values.get("est_population"))
-    if population:
-        parts.append(f"{population:,.1f} people \u00d7 160 l")
+    if _is_residential_building(values.get("building_type")):
+        population = _number(values.get("est_population"))
+        parts.append(f"{population:,.1f} people \u00d7 160 l" if population else "no population: 0 l")
     else:
-        parts.append("non-residential: usable floor space \u00d7 160/3 l")
+        parts.append("non-residential: usable floor space (footprint \u00d7 floors \u00d7 80 %) \u00d7 160/3 l")
     return "; ".join(parts)
 
 
@@ -264,7 +285,7 @@ def water_fees_building(building_id: str) -> ResponseValue:
                             "message": "The population model has not been run yet."})
         existing = {column["name"] for column in sa.inspect(conn).get_columns(TABLE)}
         columns = [name for name in BUILDING_COLUMNS if name in existing]
-        needed = ("water_fee_15min_mean_eur", "rainwater_cost_eur", "flood_risk_fee_eur",
+        needed = ("water_fee_season_eur", "rainwater_cost_eur", "flood_risk_fee_eur",
                   "water_quality_charge_eur", "water_consumption_cost_eur")
         if [name for name in needed if name not in columns]:
             return jsonify({"status": "no_data", "building_id": plain,
@@ -290,8 +311,11 @@ def water_fees_building(building_id: str) -> ResponseValue:
     # AOI change (Robin, 2026-11-25): a NULL tariff now means "not computed for this reach"
     # (outside the gauge coverage), so it stays None - the popup shows "–" - instead of
     # becoming 0.0. The total then leaves it out, and the note says so.
-    tariff_not_computed = values.get("water_fee_15min_mean_eur") is None
-    tariff = None if tariff_not_computed else _number(values.get("water_fee_15min_mean_eur"))
+    # The season total is what the building owes for the season; a result written before it
+    # existed falls back to the mean interval fee.
+    season_fee = _number(values.get("water_fee_season_eur"))
+    tariff = season_fee if season_fee is not None else _number(values.get("water_fee_15min_mean_eur"))
+    tariff_not_computed = tariff is None
     rain = _number(values.get("rainwater_cost_eur")) or 0.0
     flood = _number(values.get("flood_risk_fee_eur")) or 0.0
     quality = _number(values.get("water_quality_charge_eur")) or 0.0
@@ -311,9 +335,11 @@ def water_fees_building(building_id: str) -> ResponseValue:
         "scenarios": [
             {
                 "id": "river_tariff",
-                "name": "Scenario 1 \u00b7 river water tariff (15-minute gauges)",
+                "name": "Scenario 1 \u00b7 river water tariff (season total)",
                 "cost_eur": tariff,
-                "volume_m3": _number(values.get("allocated_water_volume_15min_m3")),
+                "volume_m3": (_number(values.get("allocated_water_volume_season_m3"))
+                              if season_fee is not None
+                              else _number(values.get("allocated_water_volume_15min_m3"))),
                 "detail": _tariff_detail(values),
             },
             {
@@ -345,6 +371,14 @@ def water_fees_building(building_id: str) -> ResponseValue:
                 "detail": _consumption_detail(values),
             },
         ],
+        "period": {
+            "season": values.get("rain_season"),
+            "start": (values.get("gauge_window_start_utc").isoformat()
+                      if hasattr(values.get("gauge_window_start_utc"), "isoformat") else None),
+            "end": (values.get("gauge_window_end_utc").isoformat()
+                    if hasattr(values.get("gauge_window_end_utc"), "isoformat") else None),
+            "river_volume_m3": _number(values.get("water_volume_season_m3")),
+        },
         "total_eur": round((tariff or 0.0) + rain + flood + quality + consumption, 2),
         "computed_utc": computed.isoformat() if hasattr(computed, "isoformat") else computed,
         # AOI change: first case added; the residential note is unchanged.

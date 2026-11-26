@@ -163,18 +163,24 @@
     signature = next;
 
     var scenarios = (data && data.scenarios) || [];
-    section.title.textContent = "Water fee · " + (scenarios.length || 5) + " scenarios";
+    var season = data && data.period && data.period.season;
+    section.title.textContent = "Water fee · " + (season ? season + " · " : "") +
+      (scenarios.length || 5) + " scenarios";
     section.table.textContent = "";
     scenarios.forEach(function (scenario) {
       section.table.appendChild(row(scenario.name, euro(scenario.cost_eur)));
       if (scenario.detail) section.table.appendChild(detailRow(scenario.detail));
     });
-    section.table.appendChild(row("Total (all " + scenarios.length + " scenarios)",
-      euro(data.total_eur), { total: true }));
+    section.table.appendChild(row("Total (" + (season ? season + ", " : "") + "all " +
+      scenarios.length + " scenarios)", euro(data.total_eur), { total: true }));
 
     var notes = [];
     if (data.scope && data.scope.reach_id) {
       notes.push("Scope " + data.scope.reach_id + " / " + data.scope.variant_key);
+    }
+    if (data.period && data.period.start && data.period.end) {
+      notes.push("season " + String(data.period.start).slice(0, 10) + " to " +
+        String(data.period.end).slice(0, 10));
     }
     if (data.computed_utc) {
       notes.push("run " + String(data.computed_utc).replace("T", " ").slice(0, 16) + " UTC");
