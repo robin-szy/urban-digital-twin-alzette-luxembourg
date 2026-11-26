@@ -261,19 +261,15 @@ def _stamp_follower(task_id: str | None, column: str) -> None:
     """Write now() into one aoi_followers row's started_at / finished_at. Never raises."""
     if not task_id:
         return
-    engine = None
     try:
         import sqlalchemy as sa
 
-        engine = get_engine()
-        with engine.begin() as conn:
+        # get_engine() is shared per process (eddie_aoi.db), so nothing to dispose here.
+        with get_engine().begin() as conn:
             conn.execute(sa.text(f"UPDATE aoi_followers SET {column} = now() WHERE task_id = :id"),
                          {"id": task_id})
     except Exception:  # pylint: disable=broad-except  # timing is cosmetic; never fail a task for it
         log.exception("Could not record %s for task %s", column, task_id)
-    finally:
-        if engine is not None:
-            engine.dispose()          # the 100-connection limit is shared by the whole stack
 
 
 @signals.task_prerun.connect
@@ -298,6 +294,6 @@ def _ensure_fallback_at_startup(sender=None, **_kwargs) -> None:
     (src/eddie_antartica/tasks.py): that file is baked into the 30 GB image, so
     changing it needs a rebuild, whereas this plugin is bind-mounted. Celery runs
     every connected worker_ready handler, so the project's own hook (EDDIE's
-    static ingest, still reading selected_polygon.geojson - task 10.3b) runs too.
+    static ingest, which since task 10.3b takes the current reach's envelope) runs too.
     """
     ensure_fallback_reach.delay()

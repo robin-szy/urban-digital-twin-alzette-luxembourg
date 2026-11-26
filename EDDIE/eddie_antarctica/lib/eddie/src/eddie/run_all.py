@@ -24,7 +24,7 @@ from typing import Dict, Union
 import geopandas as gpd
 
 from eddie.digitaltwin import cache_new_results
-from eddie.digitaltwin.working_crs import to_working_crs_rectangle
+from eddie.digitaltwin.working_crs import fetch_envelope
 
 
 def main(
@@ -75,5 +75,5 @@ def create_sample_polygon() -> gpd.GeoDataFrame:
     # Convert to WGS84 to deliberately introduce rounding errors. Ensures our development acts like production.
     # These rounding errors occur in production when serialising WGS84 polygons
     aoi = aoi.to_crs(4326)
-    # Convert the polygon to the working crs, and recalculate the bounds to ensure it is a rectangle.
-    return to_working_crs_rectangle(aoi)
+    # The base data sources accept bounds only: the working-CRS bounding rectangle of the polygon.
+    return fetch_envelope(aoi)

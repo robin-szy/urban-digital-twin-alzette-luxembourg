@@ -154,8 +154,20 @@ def database_url() -> str:
     return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
 
 
+#: One engine per database URL and process (2026-11-26). get_engine() used to create a new engine,
+#: with its own connection pool, on every call; the status route alone is called every few
+#: seconds by the map, and the discarded pools kept their connections open until garbage
+#: collection - the backend held 66 of PostgreSQL's 100 connections ("too many clients").
+#: Keyed by process id too, so a forked Celery worker never shares its parent's sockets.
+_ENGINES: dict[tuple[int, str], sa.Engine] = {}
+
+
 def get_engine(url: str | None = None) -> sa.Engine:
-    return sa.create_engine(url or database_url(), future=True)
+    key = (os.getpid(), url or database_url())
+    engine = _ENGINES.get(key)
+    if engine is None:
+        engine = _ENGINES[key] = sa.create_engine(key[1], future=True, pool_pre_ping=True)
+    return engine
 
 
 def create_schema(conn: sa.Connection) -> None:

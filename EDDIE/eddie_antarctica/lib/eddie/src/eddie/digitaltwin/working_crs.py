@@ -64,9 +64,32 @@ def resolve_working_crs(area_of_interest: Optional[gpd.GeoDataFrame] = None) -> 
     return 4326
 
 
-def to_working_crs_rectangle(area_of_interest: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def to_working_crs(area_of_interest: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
-    Reproject the area of interest to the working CRS and replace it with its bounding rectangle.
+    Reproject the area of interest to the working CRS, keeping its shape.
+
+    For a clip mask or an analysis domain: a corridor stays a corridor. Use fetch_envelope for
+    sources that only accept bounds.
+
+    Parameters
+    ----------
+    area_of_interest : gpd.GeoDataFrame
+        The area of interest, in any CRS.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        The same geometries in the working CRS.
+    """
+    return area_of_interest.to_crs(resolve_working_crs(area_of_interest))
+
+
+def fetch_envelope(area_of_interest: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    The bounding rectangle of the area of interest in the working CRS, for bounds-only sources.
+
+    Never use it as a clip mask or as the denominator of a statistic: it covers more than the
+    area of interest (use to_working_crs for those).
 
     Parameters
     ----------
@@ -78,5 +101,15 @@ def to_working_crs_rectangle(area_of_interest: gpd.GeoDataFrame) -> gpd.GeoDataF
     gpd.GeoDataFrame
         A single rectangular polygon in the working CRS.
     """
-    reprojected = area_of_interest.to_crs(resolve_working_crs(area_of_interest))
+    reprojected = to_working_crs(area_of_interest)
     return gpd.GeoDataFrame(index=[0], crs=reprojected.crs, geometry=[shapely.box(*reprojected.total_bounds)])
+
+
+def to_working_crs_rectangle(area_of_interest: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Deprecated alias of fetch_envelope, kept so existing callers keep working.
+
+    The name hid two roles in one function: reprojecting (to_working_crs) and replacing the
+    shape by its bounding rectangle (fetch_envelope). Call the one that matches the role.
+    """
+    return fetch_envelope(area_of_interest)

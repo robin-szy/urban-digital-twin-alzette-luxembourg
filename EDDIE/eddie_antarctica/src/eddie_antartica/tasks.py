@@ -45,9 +45,22 @@ def on_startup(sender: Consumer, **_kwargs: None) -> None:  # pylint: disable=mi
     sender : Consumer
         The Celery worker node instance
     """
+    # AOI change (Robin, 2026-11-26, task 10.3b): the area comes from the AOI module instead of
+    # the fixed selected_polygon.geojson (a rectangle around Alzette km 46.3-48.3): the envelope of
+    # the current reach ("dem_build" binding), the configured fallback (km 35-50) before any
+    # selection, built on demand on a fresh database. The base data step fetches by bounds only
+    # (fetch_envelope), and on this project it downloads no remote layers
+    # (instruction_json_path is None in run_all.py): it initialises GeoServer.
+    from eddie_aoi.db import get_engine
+    from eddie_base_data.query import resolve_aoi
+
+    with get_engine().connect() as aoi_conn:
+        scope = resolve_aoi(aoi_conn, "dem_build")
+        aoi_conn.commit()  # the fallback reach may just have been built
+    aoi_wkt = gpd.GeoSeries([scope.geometry], crs=2169).to_crs(4326).iloc[0].wkt
+    log.info("Base data area: envelope of reach %s", scope.reach_id)
+
     with sender.app.connection() as conn:
-        # Gather area of interest from file.
-        aoi_wkt = gpd.read_file("selected_polygon.geojson").to_crs(4326).geometry[0].wkt
         # Send a task to initialise this area of interest.
         base_data_parameters = DEFAULT_MODULES_TO_PARAMETERS[retrieve_from_instructions]
         sender.app.send_task("eddie.tasks.add_base_data_to_db", args=[aoi_wkt, base_data_parameters], connection=conn)

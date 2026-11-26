@@ -33,7 +33,7 @@ from eddie.config import EnvVariable
 from eddie.digitaltwin import retrieve_from_instructions
 from eddie.digitaltwin.utils import retry_function, setup_logging
 from eddie.discover_plugins import discover_plugins
-from eddie.digitaltwin.working_crs import to_working_crs_rectangle
+from eddie.digitaltwin.working_crs import fetch_envelope
 
 # Setup celery backend task management
 message_broker_url = f"redis://{EnvVariable.MESSAGE_BROKER_HOST}:6379/0"
@@ -109,8 +109,8 @@ def wkt_to_gdf(wkt: str) -> gpd.GeoDataFrame:
     """
     selected_polygon = gpd.GeoDataFrame(index=[0], crs="epsg:4326", geometry=[shapely.from_wkt(wkt)])
 
-    # Convert the polygon to the working crs, and recalculate the bounds to ensure it is a rectangle.
-    return to_working_crs_rectangle(selected_polygon)
+    # The base data sources accept bounds only: the working-CRS bounding rectangle of the polygon.
+    return fetch_envelope(selected_polygon)
 
 
 # Plugins must be imported after app to remove a circular dependency

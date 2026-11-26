@@ -45,6 +45,10 @@ class Binding:
 
     variant: str
     params: dict = field(default_factory=dict)
+    #: The layer a statistic of this dataset MEASURES, if any (task 8.4), e.g.
+    #: "flood_footprint_hq100" for "share of the area flooded at HQ100". Such a dataset
+    #: may not be bound to the variant derived from that same layer (see validate_binding).
+    measures: str | None = None
 
     @property
     def key(self) -> str:
@@ -121,6 +125,53 @@ class Resolution:
     degraded: bool
     degraded_reason: str | None
     is_fallback: bool
+
+
+#: Lookup variant -> the layer it is cut from (task 8.4). A statistic measuring that layer
+#: cannot use the variant as its domain: the proportion would be 1 by construction.
+VARIANT_SOURCE_LAYER: dict[str, str] = {
+    "hq100": "flood_footprint_hq100",
+    "hq_extreme": "flood_footprint_hqextreme",
+}
+
+#: Datasets whose computation depends on terrain AROUND the reach (contributing area,
+#: hillslopes), so their build extent must be the envelope, never a narrower variant
+#: (task 8.4; spec "Raster datasets separate build extent from publish extent").
+NEEDS_SURROUNDING_TERRAIN: frozenset[str] = frozenset({"dem_build"})
+
+
+def validate_binding(dataset: str, binding: Binding) -> None:
+    """Refuse a binding that would make a statistic or a computation meaningless (task 8.4).
+
+    * A dataset measuring a layer may not use the variant derived from that layer as its
+      domain (flood footprint as its own denominator). Another dataset may use it.
+    * A dataset depending on surrounding terrain may not have its build extent narrowed
+      below the envelope.
+    """
+    source = VARIANT_SOURCE_LAYER.get(binding.variant)
+    if source is not None and binding.measures == source:
+        raise PreparationError(
+            f"Invalid AOI binding for {dataset!r}: it measures {source!r} but would be measured "
+            f"over the {binding.variant!r} variant cut from that same layer, so its share would "
+            f"be 1 by construction. Bind it to an area not derived from what it measures."
+        )
+    if dataset in NEEDS_SURROUNDING_TERRAIN and binding.variant != ENVELOPE:
+        raise PreparationError(
+            f"Invalid AOI binding for {dataset!r}: its computation depends on terrain around the "
+            f"reach, so its build extent must be the {ENVELOPE!r}, not {binding.key!r}. Clip "
+            f"what it publishes with a separate publish binding instead."
+        )
+
+
+def validate_bindings(bindings: dict[str, Binding]) -> None:
+    """validate_binding for a whole registry; raises on the first invalid entry."""
+    for dataset, binding in bindings.items():
+        validate_binding(dataset, binding)
+
+
+# The registry is checked when the module loads, so an invalid binding fails at startup
+# rather than producing a meaningless figure later.
+validate_bindings(BINDINGS)
 
 
 def binding_for(dataset: str) -> Binding:

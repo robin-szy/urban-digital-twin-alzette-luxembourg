@@ -61,7 +61,8 @@
 - [x] 8.1 Implement the dataset-to-variant binding registry and `resolve(dataset, reach)` returning geometry plus provenance; verify tests for a normal resolution, a degraded resolution, and rejection of an unregistered dataset with the registered names listed
 - [x] 8.2 Populate the initial bindings — `building_population` and `flood_costs` to `corridor(500)` (Devika's `BUILDINGS_CORRIDOR_M`, so people and costs share one area); landcover, buildings and addresses to `corridor(300)`; water gauges to `buffer(1000)`; precipitation to `watersheds`; `dem_build` to the envelope; `dem_publish` to `corridor(300)`; verify a test asserting each binding resolves to the expected variant
 - [x] 8.3 Implement `envelope()` as the union of the reach's variants for bounds-only sources; verify a test that it covers every variant's geometry
-- [ ] 8.4 *(deferred)* Reject a binding that uses a dataset's own derived variant as its analysis domain, and reject narrowing a build extent that a dataset declares a dependence on surrounding terrain for; verify tests for the flood-footprint-as-own-denominator rejection, the acceptance of that variant for another dataset, and the build-extent rejection
+- [x] 8.4 *(deferred)* Reject a binding that uses a dataset's own derived variant as its analysis domain, and reject narrowing a build extent that a dataset declares a dependence on surrounding terrain for; verify tests for the flood-footprint-as-own-denominator rejection, the acceptance of that variant for another dataset, and the build-extent rejection
+  - *Done 2026-11-26 (no longer deferred):* `resolver.validate_binding` / `validate_bindings`, run when the module loads: a dataset with `Binding(measures=...)` may not use the lookup variant cut from that layer (`VARIANT_SOURCE_LAYER`: hq100, hq_extreme), and a dataset in `NEEDS_SURROUNDING_TERRAIN` (`dem_build`) must be bound to the envelope. Tests: footprint-as-own-denominator refused, same variant accepted for another dataset, narrowed terrain build extent refused, live registry valid.
 - [x] 8.5 Document the registry and the three AOI roles (fetch envelope, clip mask, analysis domain) in `eddie_aoi/README.md`; verify the README states that the envelope must never be used as an analysis domain
 - [x] 8.6 Replace the body of `eddie_base_data.query.resolve_aoi` with a call to the resolver for the current reach, mapping the result onto `AoiScope` and keeping the signature; verify `compute_building_population` reports `variant_key` `corridor_500` and the current reach id with no edit to `eddie_building_population`, and record the old (`bbox_500`) and new building and population counts in `results/` for Pegah
 - [x] 8.7 In the flood-cost wrapper (ours), replace `_frozen_scope()` in `flood_costs/tasks.py` with `resolve_aoi(conn, "flood_costs")` and take the km filter in `postgis_inputs.markers()` from the current reach instead of `34.999–50.001`, commenting each change for Devika; verify the scope written with the results names the current reach and `corridor_500`
@@ -98,7 +99,8 @@
 - [x] 10.2 *(deferred)* Replace `AOI_TABLE` and `AOI_STATION_TOLERANCE_M` in `eddie_water_level/tasks.py` with a resolver call bound to `buffer(1000)`; verify the same gauge set is selected as before the change
   - *Done 2026-11-26 (no longer deferred):* `_station_near_aoi` uses the reach's `water_gauges` area (`buffer(1000)`); for km 35–50 it selects the same gauges as before (Pfaffenthal, Hesperange); km 40–48 selects Hesperange. Pfaffenthal and Hesperange are always loaded as well, because `derive_water_level_interpolation` (km 35–50) is built between them.
 - [x] 10.3a Send `eddie_aoi.tasks.ensure_fallback_reach` from the worker startup hook in `EDDIE/eddie_antarctica/src/eddie_antartica/tasks.py`, alongside the existing static ingest; verify on a fresh database that the worker starts, logs the fallback reach it built, and that `reach_cache` holds it pinned
-- [ ] 10.3b *(deferred)* Stop reading `selected_polygon.geojson` for `add_base_data_to_db` at `EDDIE/eddie_antarctica/src/eddie_antartica/tasks.py:50`; deferred because it widens EDDIE's own static layers (3D buildings, land use) from the km 46.3–48.3 rectangle to km 35–50 — see design, Open Questions
+- [x] 10.3b *(deferred)* Stop reading `selected_polygon.geojson` for `add_base_data_to_db` at `EDDIE/eddie_antarctica/src/eddie_antartica/tasks.py:50`; deferred because it widens EDDIE's own static layers (3D buildings, land use) from the km 46.3–48.3 rectangle to km 35–50 — see design, Open Questions
+  - *Done 2026-11-26 (no longer deferred):* `on_startup` in `src/eddie_antartica/tasks.py` takes the current reach's envelope (`resolve_aoi(conn, "dem_build")`, fallback built on demand) instead of `selected_polygon.geojson`. The out-of-memory worry did not apply: on this project the base-data step downloads no remote layers (`instruction_json_path` is None) and only initialises GeoServer. Backend image rebuilt; worker startup ran `add_base_data_to_db` successfully (13 s) for `alzette_040000_042000`.
 
 ## 11. Cache eviction
 
@@ -144,9 +146,12 @@
 
 ## 13. EDDIE core CRS split *(deferred)*
 
-- [ ] 13.1 Split `to_working_crs_rectangle` in `lib/eddie/src/eddie/digitaltwin/working_crs.py:67-82` into `fetch_envelope()` keeping the bbox and a shape-preserving `to_working_crs()`; verify unit tests that the first returns a rectangle and the second preserves a corridor's shape
-- [ ] 13.2 Repoint existing core callers to whichever function matches their role, leaving `retrieve_from_instructions` on the bbox for bounds-only endpoints; verify the existing core tests still pass
-- [ ] 13.3 Record the diff in `results/` as a candidate upstream contribution, scoped to this split and its callers only; verify the recorded diff touches no unrelated CRS code
+- [x] 13.1 Split `to_working_crs_rectangle` in `lib/eddie/src/eddie/digitaltwin/working_crs.py:67-82` into `fetch_envelope()` keeping the bbox and a shape-preserving `to_working_crs()`; verify unit tests that the first returns a rectangle and the second preserves a corridor's shape
+  - *Done 2026-11-26:* `to_working_crs()` (shape kept) and `fetch_envelope()` (rectangle); `to_working_crs_rectangle` kept as a deprecated alias. Tests for both and for the alias.
+- [x] 13.2 Repoint existing core callers to whichever function matches their role, leaving `retrieve_from_instructions` on the bbox for bounds-only endpoints; verify the existing core tests still pass
+  - *Done 2026-11-26:* both callers are bounds-only and use `fetch_envelope` (`eddie.tasks.wkt_to_gdf`, `eddie.run_all.create_sample_polygon`). Core tests: 41 passed; the 3 failures are identical on the old code (database connection limit at the time).
+- [x] 13.3 Record the diff in `results/` as a candidate upstream contribution, scoped to this split and its callers only; verify the recorded diff touches no unrelated CRS code
+  - *Done 2026-11-26:* `eddie_aoi/results/eddie_core_crs_split.md` (why, change, verification, full diff; touches only `working_crs.py`, its two callers and its tests).
 
 ## 14. Integration verification
 
@@ -154,7 +159,8 @@
   - *Done 2026-11-26:* fallback `alzette_035000_050000` pinned; building_population, flood_costs, buildings resolve to corridor on it, precipitation to the flagged buffer substitute; every AOI layer's provenance names the reach (see `results/aoi_selector.md`).
 - [x] 14.2 Select a second, different reach from the frontend and confirm `building_population` is recomputed for it automatically and the map shows only that reach; verify the new rows carry the new reach id, the first reach's rows remain stored, and a reload opens on the new reach *(the reuse-check part: deferred with 9.4)*
   - *Done 2026-11-26:* switch to km 44–46: population, water fees, flood depths + costs recomputed automatically; new rows carry the new reach id, km 40–42 rows remain, the views show km 44–46 only, a reload opens on it.
-- [ ] 14.3 *(deferred)* Confirm no AOI geometry remains defined outside the module; verify a search finds no surviving `AOI_TABLE`, `AOI_STATION_TOLERANCE_M`, or `selected_polygon.geojson` AOI read in the plugins
+- [x] 14.3 *(deferred)* Confirm no AOI geometry remains defined outside the module; verify a search finds no surviving `AOI_TABLE`, `AOI_STATION_TOLERANCE_M`, or `selected_polygon.geojson` AOI read in the plugins
+  - *Done 2026-11-26 (no longer deferred):* no plugin or app code reads `AOI_TABLE`, `AOI_STATION_TOLERANCE_M`, `aoi_alzette_35_50_300m` or `selected_polygon.geojson` any more (remaining hits are comments, a legacy label for the old rain rows, and Lagloire's manual `real_test.py`). The EDDIE core's own development samples (`run_all.py`, `cache_new_results.py __main__`) still read their example polygon; they are upstream tooling, not the twin.
 
 ## Workflow follow-up
 
@@ -171,10 +177,9 @@
 ## Where we stopped (2026-11-26)
 
 Everything in sections 1–8, 11, 12 and 14 that is not marked deferred is done (on `main`).
-Sections 9 and 10 done the same day (precipitation follows the AOI, attributed and reused per
-reach; water-level gauges selected by the reach). Still deferred: 8.4, 10.3b (EDDIE's static
-ingest still reads `selected_polygon.geojson`), 13, and 14.3 (blocked by 10.3b only: no
-`AOI_TABLE` / `AOI_STATION_TOLERANCE_M` is read any more).
+Sections 9 and 10 done the same day, then 8.4, 10.3b, 13 and 14.3: every task is done.
+Also fixed on the way: a database connection leak in `eddie_aoi.db.get_engine` (one engine per
+call; now one per process), and a frame-rate counter in the map panel (Terrain & Buildings).
 
 ## Where we stopped (2026-11-20)
 

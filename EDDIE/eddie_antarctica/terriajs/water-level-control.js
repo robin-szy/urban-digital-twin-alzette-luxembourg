@@ -2663,6 +2663,61 @@
     });
     categories.terrain.appendChild(remToggle.label);
 
+    // Frame rate (Robin, 2026-11-26): frames Cesium actually draws per second, and the time between
+    // two frames, shown here in the panel, to measure what costs speed (buildings, water, shading
+    // layers). Cesium's own corner counter (debugShowFramesPerSecond) did not show up under Terria.
+    // Terria may draw only when something changes, so read it while moving the camera: with
+    // nothing moving it says "idle".
+    var fpsLine = element("div", "wl-note", "");
+    fpsLine.id = "water-level-control-fps-value";
+    fpsLine.style.display = "none";
+    var fpsStop = null;
+    function startFps() {
+      var t = findTerria();
+      var scene = t && t.cesium && t.cesium.scene;
+      if (!scene) {
+        return false;  // 2D map or not loaded yet: nothing to measure
+      }
+      var frames = 0;
+      var last = null;
+      var slowest = 0;
+      var removeListener = scene.postRender.addEventListener(function () {
+        var now = performance.now();
+        // A gap over 250 ms is the view resting between redraws, not a slow frame.
+        if (last !== null && now - last < 250) {
+          slowest = Math.max(slowest, now - last);
+        }
+        last = now;
+        frames += 1;
+      });
+      var timer = setInterval(function () {
+        fpsLine.textContent = frames ? frames + " FPS · slowest frame " + Math.round(slowest) + " ms"
+          : "idle (nothing is redrawn while the view is still)";
+        frames = 0;
+        slowest = 0;
+      }, 1000);
+      fpsLine.textContent = "measuring…";
+      scene.requestRender();
+      fpsStop = function () {
+        removeListener();
+        clearInterval(timer);
+      };
+      return true;
+    }
+    var fpsToggle = checkbox("water-level-control-fps", "Show frame rate", function (checked) {
+      if (fpsStop) {
+        fpsStop();
+        fpsStop = null;
+      }
+      if (checked && !startFps()) {
+        fpsToggle.box.checked = false;
+        checked = false;
+      }
+      fpsLine.style.display = checked ? "" : "none";
+    });
+    categories.terrain.appendChild(fpsToggle.label);
+    categories.terrain.appendChild(fpsLine);
+
     // Terrain: grayscale orthophoto and the shading of steep terrain. Changes apply at once and are kept.
     var look = section(demos.terrain, "Orthophoto");
     var grayscale = checkbox("water-level-control-grayscale", "Grayscale", function (checked) {

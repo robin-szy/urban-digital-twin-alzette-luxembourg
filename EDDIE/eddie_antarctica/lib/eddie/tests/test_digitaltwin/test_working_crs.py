@@ -6,7 +6,8 @@ import geopandas as gpd
 import shapely
 
 from eddie.config import EnvVariable
-from eddie.digitaltwin.working_crs import resolve_working_crs, to_working_crs_rectangle
+from eddie.digitaltwin.working_crs import (fetch_envelope, resolve_working_crs, to_working_crs,
+                                           to_working_crs_rectangle)
 
 
 def aoi(min_lon: float, min_lat: float, max_lon: float, max_lat: float) -> gpd.GeoDataFrame:
@@ -57,6 +58,32 @@ class ResolveWorkingCrsTest(unittest.TestCase):
         geometry = rectangle.geometry[0]
         self.assertAlmostEqual(geometry.area, geometry.envelope.area)
         self.assertTrue(geometry.contains(triangle.to_crs(32759).geometry[0]))
+
+    def test_fetch_envelope_returns_a_rectangle(self):
+        corridor = gpd.GeoDataFrame(index=[0], crs=4326, geometry=[
+            shapely.LineString([(172.5, -43.6), (172.6, -43.5), (172.7, -43.6)]).buffer(0.01)])
+        envelope = fetch_envelope(corridor)
+        self.assertEqual(envelope.crs.to_epsg(), 32759)
+        self.assertEqual(len(envelope), 1)
+        geometry = envelope.geometry[0]
+        self.assertAlmostEqual(geometry.area, geometry.envelope.area)
+        self.assertTrue(geometry.contains(corridor.to_crs(32759).geometry[0]))
+
+    def test_to_working_crs_keeps_the_shape(self):
+        corridor = gpd.GeoDataFrame(index=[0], crs=4326, geometry=[
+            shapely.LineString([(172.5, -43.6), (172.6, -43.5), (172.7, -43.6)]).buffer(0.01)])
+        reprojected = to_working_crs(corridor)
+        self.assertEqual(reprojected.crs.to_epsg(), 32759)
+        geometry = reprojected.geometry[0]
+        expected = corridor.to_crs(32759).geometry[0]
+        # A bent corridor is far smaller than its rectangle, and is returned unchanged.
+        self.assertLess(geometry.area, 0.6 * geometry.envelope.area)
+        self.assertAlmostEqual(geometry.symmetric_difference(expected).area, 0.0, places=3)
+
+    def test_old_name_is_the_envelope(self):
+        triangle = gpd.GeoDataFrame(index=[0], crs=4326,
+                                    geometry=[shapely.Polygon([(172.5, -43.6), (172.7, -43.6), (172.6, -43.4)])])
+        self.assertTrue(to_working_crs_rectangle(triangle).geometry[0].equals(fetch_envelope(triangle).geometry[0]))
 
 
 if __name__ == "__main__":

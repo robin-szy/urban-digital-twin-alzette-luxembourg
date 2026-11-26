@@ -140,3 +140,34 @@ def test_envelope_is_a_rectangle_covering_every_bound_variant(conn, reach):
         abs=1e-6,
     )
     assert result.degraded is True, "it contains a substitute, so it says so"
+
+
+# --- task 8.4: bindings that would make a figure meaningless are refused ---------
+
+
+def test_the_flood_footprint_cannot_be_its_own_denominator():
+    from eddie_aoi.resolver import Binding, validate_binding
+
+    with pytest.raises(PreparationError, match="1 by construction"):
+        validate_binding("flooded_share", Binding("hq100", measures="flood_footprint_hq100"))
+
+
+def test_the_flood_footprint_is_accepted_as_another_datasets_area():
+    from eddie_aoi.resolver import Binding, validate_binding
+
+    validate_binding("population_in_flood_zone", Binding("hq100"))
+    validate_binding("population_in_flood_zone", Binding("hq100", measures="building_population"))
+
+
+def test_narrowing_a_terrain_build_extent_is_refused():
+    from eddie_aoi.resolver import ENVELOPE, Binding, validate_binding
+
+    with pytest.raises(PreparationError, match="terrain around the reach"):
+        validate_binding("dem_build", Binding("corridor", {"half_width_m": 300.0}))
+    validate_binding("dem_build", Binding(ENVELOPE))
+
+
+def test_the_live_registry_is_valid():
+    from eddie_aoi.resolver import validate_bindings
+
+    validate_bindings(BINDINGS)
