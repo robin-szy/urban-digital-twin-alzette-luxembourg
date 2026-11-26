@@ -228,7 +228,14 @@ def consumption_table(
     columns = list(getattr(buildings, "columns", []))
     b_type = (buildings["building_type"] if "building_type" in columns
               else pd.Series("", index=buildings.index)).astype(str).str.lower().str.strip()
-    is_residential = b_type.str.contains("residential", na=False) | b_type.isin(("", "nan", "none"))
+    # "non-residential" contains "residential", so the source model's substring test put those
+    # buildings in the per-person branch too and the floor-area formula never ran. A
+    # non-residential building now always takes the area branch (where usable_space_pct lives).
+    non_residential_type = (b_type.str.contains("non-residential", na=False)
+                            | b_type.str.contains("non_residential", na=False)
+                            | b_type.str.contains("nonresidential", na=False))
+    is_residential = (b_type.str.contains("residential", na=False) & ~non_residential_type) \
+        | b_type.isin(("", "nan", "none"))
 
     population = (pd.to_numeric(buildings["est_population"], errors="coerce")
                   if "est_population" in columns else pd.Series(0.0, index=buildings.index))

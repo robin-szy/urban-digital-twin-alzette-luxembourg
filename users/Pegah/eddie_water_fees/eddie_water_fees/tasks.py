@@ -14,6 +14,7 @@ columns for that scope to NULL; run this task again afterwards.
 from __future__ import annotations
 
 import geopandas as gpd
+import numpy as np  # AOI change: typed NULL columns in not_computed_fee_table
 import pandas as pd
 import sqlalchemy as sa
 from eddie.digitaltwin import setup_environment
@@ -23,6 +24,9 @@ from eddie_base_data.publish import publish_view
 
 from .gauge_timeseries import (
     GAUGES,
+    KM_START,  # AOI change: these three are only used as the fallback reach (see reach_extent)
+    KM_END,
+    RIVER_NAME,
     fee_table,
     load_readings,
     load_water_areas,
@@ -43,7 +47,7 @@ from .scenarios import (
     flood_risk_table,
     water_quality_table,
 )
-from .seasonal_rain import SEASONS, normal_rain_mm, seasonal_rain_mm
+from .seasonal_rain import SEASONS, normal_rain_mm, season_dates, seasonal_rain_mm
 
 TABLE = "building_population"
 PUBLISH_SRID = 4326
@@ -63,6 +67,15 @@ COLUMNS: dict[str, str] = {
     "gauge_quality_15min": "text",
     "gauge_window_start_utc": "timestamp",
     "gauge_window_end_utc": "timestamp",
+    # AOI change (Robin, 2026-11-25): why scenario 1 is missing or only partial for this
+    # reach (the three gauges cover Alzette km 35.0-54.34 only). NULL when fully computed.
+    "tariff_note_15min": "text",
+    # Scenario 1, the same gauge series summed over the season: what the building owes
+    # for the whole period, the river volume measured over it, and the season's pool.
+    "water_fee_season_eur": "double precision",
+    "allocated_water_volume_season_m3": "double precision",
+    "tariff_total_eur_season": "double precision",
+    "water_volume_season_m3": "double precision",
     # Scenario 2, seasonal rain on the roofs.
     "rainwater_area_share": "double precision",
     "allocated_rainwater_volume_m3": "double precision",
@@ -109,6 +122,85 @@ def resolve_scope(conn: sa.Connection, reach_id: str | None, variant_key: str | 
     return str(row[0]), str(row[1])
 
 
+# ============================================================
+# AOI change (Robin, 2026-11-25)
+# ============================================================
+# Before: the buildings already followed the selected reach (resolve_scope), but the river
+# markers were always Alzette km 35-50. So for another reach, scenario 1 charged the whole
+# km 35-50 river volume to that reach's buildings, and scenario 3 measured distances to a
+# river that might not be in the reach at all (every building 0 EUR, which reads as
+# "no flood risk" when it really means "not computed").
+#
+# Now the markers are the reach's own:
+#   * scenario 3 uses all markers of the reach (it only needs the river line);
+#   * scenario 1 uses the part of the reach the gauges cover. Outside it there is no stage to
+#     multiply, so the columns are left NULL with the reason in tariff_note_15min - shown
+#     as "not computed", never as 0 EUR. Partly covered: computed for the covered km only,
+#     and the note says which km are missing.
+# Scenarios 2, 4 and 5 depend on the buildings only, so they are unchanged.
+
+# Lower bound: your original KM_START (Pfaffenthal at km 35.04 covers down to it).
+# Upper bound: the Livange gauge, the most upstream of the three.
+GAUGE_COVERAGE_KM = (KM_START, max(gauge.km for gauge in GAUGES))
+
+
+def reach_extent(conn: sa.Connection, reach_id: str) -> tuple[str, float, float]:
+    """(river, km_start, km_end) of a reach, from the AOI module's reach cache.
+
+    Falls back to your original Alzette km 35-50 when the AOI module is not installed or
+    does not know the reach (e.g. an old scope written before the AOI module existed).
+    """
+    try:
+        from eddie_aoi.store import read_cached  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return RIVER_NAME, KM_START, KM_END
+    cached = read_cached(conn, reach_id)
+    if cached is None:
+        return RIVER_NAME, KM_START, KM_END
+    return cached.river, float(cached.km_start), float(cached.km_end)
+
+
+def gauge_covered_part(river: str, km_start: float, km_end: float) -> tuple[tuple[float, float] | None, str | None]:
+    """The km range of the reach the gauges cover, and a note on what is missing.
+
+    Returns ((start, end), None) when fully covered, ((start, end), note) when partly
+    covered, and (None, note) when not covered at all.
+    """
+    low, high = GAUGE_COVERAGE_KM
+    if river != RIVER_NAME:
+        return None, f"not computed: the gauges are on the {RIVER_NAME}, this reach is on the {river}"
+    start, end = max(km_start, low), min(km_end, high)
+    if start >= end:
+        return None, (f"not computed: reach km {km_start:g}-{km_end:g} is outside the gauge coverage "
+                      f"(km {low:g}-{high:g})")
+    missing = [f"km {a:g}-{b:g}" for a, b in ((km_start, start), (end, km_end)) if a < b]
+    if missing:
+        return (start, end), ("partial: river volume only for km " f"{start:g}-{end:g}; "
+                              + ", ".join(missing) + " not covered by the gauges")
+    return (start, end), None
+
+
+def not_computed_fee_table(buildings: gpd.GeoDataFrame, note: str) -> pd.DataFrame:
+    """Scenario 1 columns for a reach the gauges do not cover: all NULL, with the reason.
+
+    Same columns and building_id as gauge_timeseries.fee_table. The NULLs are typed
+    (float NaN, NaT) so the staging table in write_columns gets the right SQL types.
+    """
+    id_column = next(name for name in BUILDING_ID_COLUMNS if name in buildings.columns)
+    count = len(buildings)
+    table = pd.DataFrame({"building_id": buildings[id_column].to_numpy()})
+    for name in ("water_area_share_15min", "allocated_water_volume_15min_m3", "water_fee_15min_mean_eur",
+                 "water_fee_15min_min_eur", "water_fee_15min_max_eur", "tariff_mean_eur_15min",
+                 "tariff_intervals_15min", "water_fee_season_eur", "allocated_water_volume_season_m3",
+                 "tariff_total_eur_season", "water_volume_season_m3"):
+        table[name] = np.full(count, np.nan)
+    table["gauge_quality_15min"] = "not computed"
+    table["gauge_window_start_utc"] = pd.NaT
+    table["gauge_window_end_utc"] = pd.NaT
+    table["tariff_note_15min"] = note
+    return table
+
+
 def read_buildings(conn: sa.Connection, reach_id: str, variant_key: str) -> gpd.GeoDataFrame:
     """The rows of one scope, with the columns both models need."""
     return gpd.read_postgis(
@@ -131,21 +223,24 @@ def _id_column(buildings) -> str:
     raise KeyError(f"No unique, complete id column among {BUILDING_ID_COLUMNS} in the result rows.")
 
 
-def recreate_view(conn: sa.Connection) -> None:
+def recreate_view(conn: sa.Connection, variant_key: str) -> None:
     """Rebuild <table>_4326 with the table's current columns.
 
     ``eddie_base_data.publish.write_derived`` creates this view when it writes results;
     ``publish_view`` only registers it in GeoServer. Adding columns therefore needs the
     view rebuilt here, or the new columns never reach the map.
+
+    AOI change (Robin, 2026-11-25): the view used to be rebuilt WITHOUT a filter, so the
+    map drew building_population of every reach ever computed at once (e.g. km 35-50
+    buildings while km 43-46 was selected). The view write_derived creates shows only the
+    CURRENT reach; this keeps that filter, using the same helper. variant_key is the
+    scope just written (corridor_500 for building_population).
     """
-    columns = [column["name"] for column in sa.inspect(conn).get_columns(TABLE) if column["name"] != "geometry"]
-    selected = ", ".join(f'"{name}"' for name in columns)
-    conn.execute(sa.text(f'DROP VIEW IF EXISTS "{VIEW}"'))
-    conn.execute(sa.text(
-        f'CREATE VIEW "{VIEW}" AS SELECT {selected}, '
-        f'ST_Transform(geometry, {PUBLISH_SRID})::geometry(Geometry, {PUBLISH_SRID}) AS geometry '
-        f'FROM "{TABLE}" '
-    ))
+    # pylint: disable=import-outside-toplevel
+    from eddie_base_data.publish import current_scope_filter
+    from eddie_base_data.publish import recreate_view as rebuild
+
+    rebuild(conn, TABLE, current_scope_filter(conn, variant_key))
 
 
 def _match(on: str) -> str:
@@ -182,7 +277,7 @@ def write_columns(engine: sa.Engine, values: pd.DataFrame, id_column: str, reach
             raise RuntimeError(
                 f"Updated {result.rowcount} rows for {reach_id}/{variant_key}, expected {len(staged)}."
             )
-        recreate_view(conn)
+        recreate_view(conn, variant_key)  # AOI change: keeps the current-reach filter
 
 
 def season_rain(season: str, season_year: int, use_normals: bool) -> tuple[float, str]:
@@ -204,7 +299,7 @@ def season_rain(season: str, season_year: int, use_normals: bool) -> tuple[float
 
 @app.task(name="eddie_water_fees.tasks.compute_water_fees")
 def compute_water_fees(
-    percentage: float = 0.10,
+    percentage: float = 0.04,
     unit_price: float = 7.0,
     gauge_start: str | None = None,
     gauge_end: str | None = None,
@@ -212,6 +307,7 @@ def compute_water_fees(
     season: str = "summer",
     season_year: int = 2024,
     use_normals: bool = False,
+    tariff_period: str = "season",
     rainwater_unit_price: float = DEFAULT_RAINWATER_UNIT_PRICE,
     distance_threshold: float = DEFAULT_DISTANCE_THRESHOLD_M,
     flood_risk_base_fee: float = DEFAULT_FLOOD_RISK_BASE_FEE,
@@ -223,30 +319,60 @@ def compute_water_fees(
     variant_key: str | None = None,
 ) -> dict:
     """Add the five water-fee scenarios to one scope's buildings."""
+    tariff_period = str(tariff_period).strip().lower()
+    if tariff_period not in ("season", "window"):
+        raise ValueError('tariff_period must be "season" (the season dates) or "window".')
+
     engine = setup_environment.get_database()
     with engine.connect() as conn:
         reach, variant = resolve_scope(conn, reach_id, variant_key)
-        markers = markers_from_postgis(conn)
+        # AOI change: the reach's own river markers instead of the fixed km 35-50 (see the
+        # AOI block above reach_extent). `markers` = whole reach, for scenario 3;
+        # `gauge_markers` = the part the gauges cover, for scenario 1 (None if no part).
+        river, reach_start, reach_end = reach_extent(conn, reach)
+        markers = markers_from_postgis(conn, reach_start, reach_end, river)
+        covered, tariff_note = gauge_covered_part(river, reach_start, reach_end)
+        gauge_markers = None
+        if covered is not None:
+            try:
+                gauge_markers = markers_from_postgis(conn, covered[0], covered[1], river)
+            except ValueError:  # fewer than 2 markers in a sliver of coverage: nothing to measure
+                tariff_note = f"not computed: too short a stretch (km {covered[0]:g}-{covered[1]:g}) inside the gauge coverage"
         buildings = read_buildings(conn, reach, variant)
     if buildings.empty:
         raise RuntimeError(f'No rows in "{TABLE}" for {reach}/{variant}.')
     id_column = _id_column(buildings)
 
-    print(f" -> Scope {reach}/{variant}: {len(buildings)} buildings")
-    water = load_water_areas(markers)
-    areas = section_areas(markers, water)
-    print(" -> Section areas (m²): " + ", ".join(f"{name} {area:,.0f}" for name, area in areas.items()))
-    if not any(areas.values()):
-        raise ValueError("No mapped river surface in any section; check OSM_GPKG.")
+    print(f" -> Scope {reach}/{variant}: {len(buildings)} buildings, {river} km {reach_start:g}-{reach_end:g}")
+    if tariff_note:
+        print(f" -> Scenario 1: {tariff_note}")
 
-    start_ts, end_ts = period(gauge_start, gauge_end)
-    readings = load_readings(readings_json, start_ts, end_ts)
-    for gauge in GAUGES:
-        print(f" -> {gauge.name} (station {gauge.station_id}): {len(readings.get(gauge.station_id, []))} readings")
-    series = volume_series(readings, areas=areas, percentage=percentage, unit_price=unit_price)
-    print(f" -> {len(series)} intervals, quality {series['quality'].value_counts().to_dict()}")
+    # Scenario 1, unchanged except that it runs on gauge_markers (AOI change), and only when
+    # the reach has a gauge-covered part; otherwise its columns are NULL with the reason.
+    areas, series = {}, None
+    if gauge_markers is not None:
+        water = load_water_areas(gauge_markers)
+        areas = section_areas(gauge_markers, water)
+        print(" -> Section areas (m²): " + ", ".join(f"{name} {area:,.0f}" for name, area in areas.items()))
+        if not any(areas.values()):
+            raise ValueError("No mapped river surface in any section; check OSM_GPKG.")
 
-    fees = fee_table(buildings, series)
+        if tariff_period == "season":
+            first_day, last_day = season_dates(season_year, season.strip().lower())
+            start_ts, end_ts = period(str(first_day), f"{last_day} 23:59")
+        else:
+            start_ts, end_ts = period(gauge_start, gauge_end)
+        print(f" -> Scenario 1 window: {start_ts} to {end_ts} UTC ({tariff_period})")
+        readings = load_readings(readings_json, start_ts, end_ts)
+        for gauge in GAUGES:
+            print(f" -> {gauge.name} (station {gauge.station_id}): {len(readings.get(gauge.station_id, []))} readings")
+        series = volume_series(readings, areas=areas, percentage=percentage, unit_price=unit_price)
+        print(f" -> {len(series)} intervals, quality {series['quality'].value_counts().to_dict()}")
+        fees = fee_table(buildings, series)
+        fees["tariff_note_15min"] = tariff_note  # None when fully covered, else the "partial: ..." note
+    else:
+        fees = not_computed_fee_table(buildings, tariff_note)
+
     rain_mm, rain_source = season_rain(season, season_year, use_normals)
     rain = rain_table(buildings, rain_mm, unit_price=rainwater_unit_price, season=season.strip().lower(),
                       source=rain_source)
@@ -265,10 +391,17 @@ def compute_water_fees(
     write_columns(engine, values, id_column, reach, variant)
     layer = publish_view(engine, TABLE)
 
-    tariffs = series["tariff_eur"].dropna()
-    mean_tariff = float(tariffs.mean())
+    # AOI change: series is None when scenario 1 was not computed for this reach; the
+    # scenario-1 numbers in the result are then None (not 0) and the note says why.
+    tariffs = series["tariff_eur"].dropna() if series is not None else pd.Series(dtype="float64")
+    mean_tariff = float(tariffs.mean()) if len(tariffs) else None
     fee_buildings = int((values["water_area_share_15min"] > 0).sum())
-    print(f" -> Mean tariff {mean_tariff:,.2f} EUR shared by {fee_buildings} non-residential buildings")
+    if mean_tariff is not None:
+        print(f" -> Mean tariff {mean_tariff:,.2f} EUR shared by {fee_buildings} non-residential buildings")
+    if series is not None:
+        print(f" -> Season tariff {values['tariff_total_eur_season'].iloc[0]:,.2f} EUR over "
+              f"{values['tariff_intervals_15min'].iloc[0]:.0f} intervals, "
+              f"river volume {values['water_volume_season_m3'].iloc[0]:,.0f} m\u00b3")
     print(f" -> {rain_mm} mm of rain -> {values['rain_volume_m3'].iloc[0]:,.0f} m³, "
           f"{values['rainwater_cost_eur'].sum():,.2f} EUR at {rainwater_unit_price}/m³")
     in_zone = int((values["flood_risk_fee_eur"] > 0).sum())
@@ -284,15 +417,23 @@ def compute_water_fees(
         "reach_id": reach,
         "variant_key": variant,
         "buildings": int(len(values)),
-        "intervals": int(len(series)),
-        "priced_intervals": int(tariffs.size),
+        # AOI change: the reach and what scenario 1 could cover of it.
+        "reach_km": [reach_start, reach_end],
+        "tariff_note": tariff_note,
+        "intervals": int(len(series)) if series is not None else None,
+        "priced_intervals": int(tariffs.size) if series is not None else None,
         "gauge_quality": str(fees["gauge_quality_15min"].iloc[0]),
         "gauge_window_start_utc": str(fees["gauge_window_start_utc"].iloc[0]),
         "gauge_window_end_utc": str(fees["gauge_window_end_utc"].iloc[0]),
         "section_areas_m2": {name: round(float(area), 1) for name, area in areas.items()},
-        "mean_tariff_eur": round(mean_tariff, 2),
-        "min_tariff_eur": round(float(tariffs.min()), 2),
-        "max_tariff_eur": round(float(tariffs.max()), 2),
+        "tariff_period": tariff_period,
+        "tariff_total_eur_season": (round(float(values["tariff_total_eur_season"].iloc[0]), 2)
+                                    if series is not None else None),
+        "water_volume_season_m3": (round(float(values["water_volume_season_m3"].iloc[0]), 1)
+                                   if series is not None else None),
+        "mean_tariff_eur": round(mean_tariff, 2) if mean_tariff is not None else None,
+        "min_tariff_eur": round(float(tariffs.min()), 2) if mean_tariff is not None else None,
+        "max_tariff_eur": round(float(tariffs.max()), 2) if mean_tariff is not None else None,
         "fee_buildings": fee_buildings,
         "rain_mm": float(rain_mm),
         "rain_source": rain_source,
@@ -304,7 +445,10 @@ def compute_water_fees(
         "water_consumption_m3": round(float(values["water_consumption_m3"].sum()), 1),
         "water_consumption_cost_eur": round(float(values["water_consumption_cost_eur"].sum()), 2),
         "all_scenarios_eur": round(float(
-            values["water_fee_15min_mean_eur"].sum() + values["rainwater_cost_eur"].sum()
+            values["water_fee_season_eur"].sum() + values["rainwater_cost_eur"].sum()
             + values["flood_risk_fee_eur"].sum() + values["water_quality_charge_eur"].sum()
             + values["water_consumption_cost_eur"].sum()), 2),
+        # AOI change: True when scenario 1 is missing or partial, i.e. the total above
+        # leaves out (some of) the river tariff. tariff_note says which.
+        "all_scenarios_partial": tariff_note is not None,
     }

@@ -3,9 +3,11 @@
 EDDIE plugin for the five water-fee scenarios Pegah runs in `users/Pegah/main.py`, written to
 be copied out of `users/Pegah/`:
 
-* **scenario 1, 15-minute** — `src/timeseries_model_first_scenario.py`: the gauge readings
-  give a total river volume every 15 minutes, which becomes a tariff shared by the
-  non-residential buildings by footprint.
+* **scenario 1, seasonal river tariff** — `src/timeseries_model_first_scenario.py`: the gauge
+  readings give a total river volume every 15 minutes, which becomes a tariff shared by the
+  non-residential buildings by footprint. The task runs the gauge series over the **season's
+  own dates** and sums its intervals, so `water_fee_season_eur` is what a building owes for
+  the whole season (the mean interval fee is kept for reference).
 * **scenario 2, seasonal rain** — `seasonal_rain.py` (Lagloire's module) +
   `src/simple_model_second_scenario.py`: the rain of a season on the roofs becomes a volume,
   shared by footprint over **all** buildings.
@@ -30,7 +32,10 @@ buildings, and the panel reads the totals back from `/water-fees/summary.json`.
 |---|---|
 | `water_area_share_15min` | share of the non-residential footprint (0 for residential / unclassified) |
 | `allocated_water_volume_15min_m3` | mean pool of the window × share |
-| `water_fee_15min_mean_eur` | mean tariff of the window × share — **the fee** |
+| `water_fee_15min_mean_eur` | mean tariff of the window × share — the typical 15-minute charge |
+| `water_fee_season_eur` | sum of the season's interval tariffs × share — **scenario 1's fee for the season** |
+| `allocated_water_volume_season_m3` | the season's tariff pool × share |
+| `tariff_total_eur_season`, `water_volume_season_m3` | the season's tariff pool and the river volume measured over it |
 | `water_fee_15min_min_eur`, `water_fee_15min_max_eur` | cheapest / dearest interval × share |
 | `tariff_mean_eur_15min`, `tariff_intervals_15min` | the window's tariff and how many intervals priced |
 | `gauge_quality_15min` | weakest interval label: `observed` / `interpolated` / `carried` / `missing` |
@@ -70,8 +75,16 @@ both present because the plugin contract requires both.
 ## Run it
 
 In the map: **Water-fee model** panel → *15-minute tariff and rain* → **Run 15-minute
-tariff + rain**. Choose the gauge window (UTC, empty = the last 7 days), the share and the
-tariff, the rain season and year, and tick *Use 1991-2020 normals* to stay offline.
+tariff + rain**. Choose the share and the tariff, the season and year (the gauges and the
+rain both use that season by default), and tick *Use 1991-2020 normals* to stay offline.
+Passing `"tariff_period": "window"` with `gauge_start` / `gauge_end` switches scenario 1
+back to an explicit window.
+
+The same panel also sets scenarios 3-5, which used to be backend defaults only: *Flood zone*
+(`distance_threshold`, m), *Flood levy* (`flood_risk_base_fee`, €), *Quality fee*
+(`quality_unit_price`, €/m²), *Use per person* (`liters_per_person`, l), *Use fee*
+(`unit_price_per_liter`, €/l) and *Usable floor space* (`usable_space_pct`, 0-1). The API
+accepts the same fields.
 
 Without the interface:
 
@@ -146,6 +159,16 @@ writes.
   window was, so a stale stretch is visible instead of being averaged silently.
 * Timestamps are treated as UTC, as the collector stores them; around a clock change a
   period boundary can shift by an hour.
+* With `tariff_period = season` (the default) the gauges are read from the first to the last
+  day of the chosen season — 8 832 intervals for summer 2024 — and their tariffs are
+  **summed**: the money owed for the season, not the money of one interval. Over summer 2024
+  the river carries about 1.30 billion m³ through the two mapped sections, so the 4 % pool
+  at 7 €/m³ is about 363 M€ for the scope and dominates the five-scenario total. That is the
+  source model's rate applied continuously; if the levy is meant per interval, a day or a
+  month, the period has to be stated and the rate scaled to it. The share is the `percentage`
+  parameter (default 0.04, formerly 0.10).
+* `tariff_period = window` keeps the earlier behaviour: the `gauge_start` / `gauge_end`
+  window, and `water_fee_15min_mean_eur` is the fee shown.
 
 **Scenario 2 (rain)**
 
@@ -172,11 +195,12 @@ writes.
 
 **Scenario 5 (water consumption)**
 
-* The source model's residential test is kept verbatim — `"residential" in building_type` —
-  and that string is also contained in `"non-residential"`, so every building takes the
-  160 l per person branch and a building without population pays 0 €. The floor-area branch
-  (footprint × floors × 0.80 × 160/3 l) is dead code in `main.py` too; change the test if the
-  floor-area charge is what was meant.
+* The source model's residential test — `"residential" in building_type` — is **corrected**
+  here: `"non-residential"` contains `"residential"`, which used to send those 3,769
+  buildings through the per-person branch and left the floor-area formula dead (as in
+  `main.py`). In EDDIE a building typed non-residential now always pays
+  `footprint × floors × usable_space_pct × 160/3 l`, which is also what makes the
+  `usable_space_pct` control do something.
 * A positive population below 1 counts as one person, as in the source model.
 
 ## Traps

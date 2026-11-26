@@ -112,7 +112,7 @@ REQUEST_PAUSE_S = 0.2
 GRID_FREQ = "15min"
 
 # Scenario 1 defaults (main.py).
-DEFAULT_PERCENTAGE = 0.10
+DEFAULT_PERCENTAGE = 0.04
 DEFAULT_UNIT_PRICE = 7.0
 
 
@@ -140,8 +140,16 @@ GAUGES = (
 # RIVER GEOMETRY
 # ============================================================
 
-def _normalise_markers(markers) -> gpd.GeoDataFrame:
-    """The Alzette kilometrage markers of the reach, EPSG:2169, sorted by km."""
+def _normalise_markers(markers, km_start: float = KM_START, km_end: float = KM_END,
+                       river: str = RIVER_NAME) -> gpd.GeoDataFrame:
+    """The Alzette kilometrage markers of the reach, EPSG:2169, sorted by km.
+
+    AOI change (Robin, 2026-11-25): km_start / km_end / river used to be the fixed
+    KM_START / KM_END / RIVER_NAME. They are parameters now, so that EDDIE can pass the
+    reach the user selected (tasks.py reads it from the AOI module). The defaults are your
+    original values, so the standalone run and anything else calling this unchanged
+    behaves exactly as before.
+    """
     frame = markers.copy()
     frame.columns = [str(column).strip().lower() for column in frame.columns]
     if "toponyme" not in frame.columns or "kilo_km" not in frame.columns:
@@ -149,29 +157,35 @@ def _normalise_markers(markers) -> gpd.GeoDataFrame:
     if frame.crs is None:
         frame = frame.set_crs(TARGET_CRS)
     frame = frame.to_crs(TARGET_CRS)
+    # AOI change: river / km_start / km_end instead of RIVER_NAME / KM_START / KM_END.
     selected = frame[
-        (frame["toponyme"] == RIVER_NAME)
-        & (frame["kilo_km"] >= KM_START - KM_TOLERANCE)
-        & (frame["kilo_km"] <= KM_END + KM_TOLERANCE)
+        (frame["toponyme"] == river)
+        & (frame["kilo_km"] >= km_start - KM_TOLERANCE)
+        & (frame["kilo_km"] <= km_end + KM_TOLERANCE)
     ].sort_values("kilo_km")
     if len(selected) < 2:
-        raise ValueError(f"Fewer than 2 {RIVER_NAME} markers between km {KM_START} and {KM_END}.")
+        raise ValueError(f"Fewer than 2 {river} markers between km {km_start} and {km_end}.")
     return selected.reset_index(drop=True)
 
 
-def markers_from_postgis(conn: sa.Connection) -> gpd.GeoDataFrame:
-    """The reach markers of ``base_river_km_primary`` (EPSG:2169)."""
+def markers_from_postgis(conn: sa.Connection, km_start: float = KM_START, km_end: float = KM_END,
+                         river: str = RIVER_NAME) -> gpd.GeoDataFrame:
+    """The reach markers of ``base_river_km_primary`` (EPSG:2169).
+
+    AOI change (Robin, 2026-11-25): the reach is a parameter (default: your km 35-50 on
+    the Alzette, as before). See _normalise_markers.
+    """
     sql = sa.text(
         f'SELECT toponyme, kilo_km, geometry FROM "{MARKERS_TABLE}" '
         "WHERE toponyme = :river AND kilo_km BETWEEN :low AND :high ORDER BY kilo_km"
     )
     markers = gpd.read_postgis(
         sql, conn, geom_col="geometry",
-        params={"river": RIVER_NAME, "low": KM_START - KM_TOLERANCE, "high": KM_END + KM_TOLERANCE},
+        params={"river": river, "low": km_start - KM_TOLERANCE, "high": km_end + KM_TOLERANCE},
     )
     if markers.empty:
-        raise ValueError(f"No {RIVER_NAME} markers between km {KM_START} and {KM_END} in {MARKERS_TABLE}.")
-    return _normalise_markers(markers)
+        raise ValueError(f"No {river} markers between km {km_start} and {km_end} in {MARKERS_TABLE}.")
+    return _normalise_markers(markers, km_start, km_end, river)
 
 
 def markers_from_file(path: str | Path = RIVER_KILOMETRAGE_GPKG) -> gpd.GeoDataFrame:
@@ -456,7 +470,7 @@ def volume_series(
     areas : dict
         Gauge name -> section area in m² (see section_areas).
     percentage : float
-        Share of the volume that forms the tariff pool (scenario 1: 0.10).
+        Share of the volume that forms the tariff pool (scenario 1: 0.04).
     unit_price : float
         Tariff per m³ (scenario 1: 7.0).
 
@@ -606,14 +620,23 @@ def fee_table(buildings: pd.DataFrame | gpd.GeoDataFrame, series: pd.DataFrame) 
     -------
     pd.DataFrame
         ``building_id`` plus the columns added to building_population: the share, the
-        mean / min / max fee over the priced intervals, and the period's constants
+        mean / min / max fee over the priced intervals, the season totals (sum of the
+        interval tariffs, sum of the river volume), and the period's constants
         (mean tariff, number of intervals, worst quality, window).
+
+    The season columns sum the same series the mean is taken from: a building's fee for
+    the period is its share of every interval's tariff, so ``water_fee_season_eur`` is
+    what it owes for the whole period, while ``water_fee_15min_mean_eur`` stays the
+    typical 15-minute charge.
     """
     shares = area_share(buildings)
     tariffs = series["tariff_eur"].dropna()
     if not len(tariffs):
         raise ValueError("No priced interval in the period; nothing to allocate.")
     mean_pool = float(series["extra_pool_m3"].mean())
+    season_pool_m3 = float(series["extra_pool_m3"].dropna().sum())
+    season_volume_m3 = float(series["total_volume_m3"].dropna().sum())
+    season_tariff_eur = float(tariffs.sum())
 
     table = pd.DataFrame({
         "water_area_share_15min": shares,
@@ -621,8 +644,12 @@ def fee_table(buildings: pd.DataFrame | gpd.GeoDataFrame, series: pd.DataFrame) 
         "water_fee_15min_mean_eur": float(tariffs.mean()) * shares,
         "water_fee_15min_min_eur": float(tariffs.min()) * shares,
         "water_fee_15min_max_eur": float(tariffs.max()) * shares,
+        "water_fee_season_eur": season_tariff_eur * shares,
+        "allocated_water_volume_season_m3": season_pool_m3 * shares,
     })
     table["tariff_mean_eur_15min"] = float(tariffs.mean())
+    table["tariff_total_eur_season"] = season_tariff_eur
+    table["water_volume_season_m3"] = season_volume_m3
     table["tariff_intervals_15min"] = int(tariffs.size)
     table["gauge_quality_15min"] = _worst_quality(series.loc[tariffs.index, "quality"])
     table["gauge_window_start_utc"] = pd.Timestamp(series["timestamp"].min())
