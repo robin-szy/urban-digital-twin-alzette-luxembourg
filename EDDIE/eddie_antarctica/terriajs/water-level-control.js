@@ -1737,22 +1737,71 @@
     return banner;
   }
 
-  function showAoiStatus(data) {
+  // Timing (Robin, 2026-11-26): each module shows how long it has been computing, counted up
+  // every second between two polls; once done, its result line and how long it took. When
+  // everything is done the banner stays 6 s, then hides. elapsed_s comes from the database
+  // (started_at / finished_at stamped by the worker), so the browser clock does not matter.
+  var aoiLastData = null;
+  var aoiLastFetch = 0;
+  var aoiTicker = null;
+
+  function aoiDuration(seconds) {
+    if (seconds === null || seconds === undefined) {
+      return "";
+    }
+    var s = Math.max(0, Math.round(seconds));
+    return s < 60 ? s + " s" : Math.floor(s / 60) + " min " + (s % 60 < 10 ? "0" : "") + (s % 60) + " s";
+  }
+
+  function renderAoiStatus() {
+    var data = aoiLastData;
+    if (!data) {
+      return;
+    }
     var banner = aoiBanner();
     var area = data.river ? data.river + " km " + data.km_start + "–" + data.km_end : data.reach_id;
+    var sincePoll = (Date.now() - aoiLastFetch) / 1000;
     var lines = (data.modules || []).map(function (m) {
-      var mark = m.state === "computing" ? "⏳ computing…" : m.state === "failed" ? "⚠️ failed" :
-        m.state === "partial" ? "◐ partial" : "✓ ready";
+      var mark;
+      if (m.state === "computing") {
+        if (m.started === false) {
+          mark = "⏳ waiting…";        // queued behind the task before it in its chain
+        } else {
+          var running = m.elapsed_s === null || m.elapsed_s === undefined ? null : m.elapsed_s + sincePoll;
+          mark = "⏳ computing…" + (running === null ? "" : " " + aoiDuration(running));
+        }
+      } else {
+        mark = m.state === "failed" ? "⚠️ failed" : m.state === "partial" ? "◐ partial" :
+          m.state === "none" ? "– none" : "✓ ready";
+        if (m.elapsed_s !== null && m.elapsed_s !== undefined) {
+          mark += " in " + aoiDuration(m.elapsed_s);
+        }
+      }
+      var details = [m.summary, m.note].filter(function (x) { return x; });
       return "<div>" + m.label + ": <b>" + mark + "</b>" +
-        (m.note ? "<div style=\"opacity:.8;font-size:12px\">" + m.note + "</div>" : "") + "</div>";
+        details.map(function (d) { return "<div style=\"opacity:.8;font-size:12px\">" + d + "</div>"; }).join("") +
+        "</div>";
     });
     banner.innerHTML = "<div style=\"font-weight:600;margin-bottom:2px\">Area of interest: " + area + "</div>" +
       (lines.length ? lines.join("") : "<div>No module results recorded for this area yet.</div>");
+  }
+
+  function showAoiStatus(data) {
+    aoiLastData = data;
+    aoiLastFetch = Date.now();
+    renderAoiStatus();
+    var banner = aoiBanner();
     clearTimeout(aoiDoneTimer);
     banner.style.display = "block";
-    if (!data.computing) {
-      // Everything finished: keep the summary (and any partial notes) up for a while, then hide.
-      aoiDoneTimer = setTimeout(function () { banner.style.display = "none"; }, 20000);
+    if (data.computing && !aoiTicker) {
+      aoiTicker = setInterval(renderAoiStatus, 1000);   // the running clocks
+    } else if (!data.computing) {
+      if (aoiTicker) {
+        clearInterval(aoiTicker);
+        aoiTicker = null;
+      }
+      // Everything finished: keep the results up for 6 s, then hide.
+      aoiDoneTimer = setTimeout(function () { banner.style.display = "none"; }, 6000);
     }
   }
 

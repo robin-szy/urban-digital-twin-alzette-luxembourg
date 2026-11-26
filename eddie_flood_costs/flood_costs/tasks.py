@@ -393,7 +393,110 @@ if importlib.util.find_spec("eddie") is not None:
             return result
         result["costs"] = load_flood_costs_to_db(run_id)
         try:
-            result["dynamic_curve_task"] = run_dynamic_curve.delay().id
+            # AOI cache (Robin, 2026-11-26): was run_dynamic_curve.delay(). Your curve task is
+            # unchanged; save_curve_snapshot only runs after it and copies the curve it wrote into
+            # this run's folder, so a later switch back to this reach can show it at once.
+            from celery import chain  # pylint: disable=import-outside-toplevel
+            result["dynamic_curve_task"] = chain(run_dynamic_curve.si(), save_curve_snapshot.si(run_id)) \
+                .apply_async().parent.id
         except Exception as exc:  # pylint: disable=broad-except
             result["dynamic_curve_task"] = {"skipped": str(exc)}
         return result
+
+    # --- AOI cache (Robin, 2026-11-26) -------------------------------------------------------
+    # Switching to a reach used to show nothing until recompute_for_current_reach had finished
+    # (minutes). Every run already stays on disk in RUNS_DIR/<run_id>/ with its scope.json, so
+    # the newest finished run of the SAME reach is a ready-made cache. On a switch,
+    # load_cached_for_current_reach publishes it first (your own steps 2 and 4, unchanged, a few
+    # seconds), and recompute_for_current_reach runs right after it as before and replaces it
+    # with a fresh run (chained in eddie_aoi.resolver: FOLLOWERS + THEN). Nothing of your
+    # calculation changes; these functions only re-publish files your steps wrote.
+    CURVE_SNAPSHOT = "dynamic_curve_snapshot.pkl"   # in the run folder, written by save_curve_snapshot
+
+    def _latest_run_for(reach_id):
+        """(run_id, has_costs) of the newest run computed for this reach that has depths on disk, or None."""
+        found = []
+        for scope_file in RUNS_DIR.glob(f"*/{SCOPE_FILE}"):
+            try:
+                record = json.loads(scope_file.read_text())
+            except (OSError, ValueError):
+                continue
+            if record.get("reach_id") != reach_id:
+                continue
+            run_dir = scope_file.parent
+            # The same file names your load steps read (load_depths_to_db, load_flood_costs_to_db).
+            depth = next(run_dir.glob("**/building_reconstructed_depths.geojson"), None)
+            if depth is None:
+                continue                    # step 1 never finished: nothing to show
+            has_costs = next(run_dir.glob("**/building_flood_damage.geojson"), None) is not None \
+                and next(run_dir.glob("**/damage_summary.csv"), None) is not None
+            found.append((scope_file.stat().st_mtime, run_dir.name, has_costs))
+        if not found:
+            return None
+        _, run_id, has_costs = max(found)
+        return run_id, has_costs
+
+    @app.task(name="eddie_flood_costs.tasks.load_cached_for_current_reach")
+    def load_cached_for_current_reach() -> dict:
+        """Publish the newest earlier run of the current reach, if there is one. Never raises.
+
+        It must not fail: it is the first task of a Celery chain, and a failure would stop the
+        fresh recompute behind it. Every problem is returned as {"cached": None, "reason": ...}.
+        """
+        # pylint: disable=import-outside-toplevel
+        try:
+            from eddie_aoi.current import current_reach
+            from eddie_aoi.db import get_engine
+
+            with get_engine().connect() as conn:
+                reach_id = current_reach(conn).reach_id
+            latest = _latest_run_for(reach_id)
+            if latest is None:
+                return {"cached": None, "reach_id": reach_id, "reason": "no earlier result for this area"}
+            run_id, has_costs = latest
+            result = {"cached": run_id, "reach_id": reach_id, "depths": load_depths_to_db(run_id)}
+            if has_costs:
+                result["costs"] = load_flood_costs_to_db(run_id)
+                result["curve"] = _restore_curve_snapshot(run_id)
+            return result
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"cached": None, "reason": f"cache not loaded ({type(exc).__name__}: {exc})"}
+
+    @app.task(name="eddie_flood_costs.tasks.save_curve_snapshot")
+    def save_curve_snapshot(run_id: str) -> dict:
+        """Copy the stage-curve tables run_dynamic_curve just wrote into the run's folder (read-only on the DB)."""
+        # pylint: disable=import-outside-toplevel
+        import pandas as pd
+        from eddie.digitaltwin import setup_environment
+        from .dynamic import store
+
+        engine = setup_environment.get_database()
+        try:
+            with engine.connect() as conn:
+                tables = {name: pd.read_sql_table(name, conn) for name in (store.CURVE, store.CURVE_BUILDINGS)}
+        finally:
+            engine.dispose()
+        if set(tables[store.CURVE].get("run_id", [])) != {run_id}:
+            return {"skipped": f"the curve in the database is not run {run_id}'s"}   # a newer run won
+        pd.to_pickle(tables, RUNS_DIR / run_id / CURVE_SNAPSHOT)
+        return {"run_id": run_id, "snapshot": CURVE_SNAPSHOT}
+
+    def _restore_curve_snapshot(run_id):
+        """Put a run's saved stage curve back into the curve tables (as run_dynamic_curve would)."""
+        # pylint: disable=import-outside-toplevel
+        import pandas as pd
+        from eddie.digitaltwin import setup_environment
+        from eddie_base_data.ingest import transactional
+
+        path = RUNS_DIR / run_id / CURVE_SNAPSHOT
+        if not path.is_file():
+            return {"skipped": "no saved curve for this run; the recompute after this writes one"}
+        tables = pd.read_pickle(path)
+        engine = setup_environment.get_database()
+        try:
+            with transactional(engine).begin() as conn:
+                for name, frame in tables.items():
+                    frame.to_sql(name, conn, if_exists="replace", index=False)
+        finally:
+            engine.dispose()
+        return {"restored": sorted(tables)}

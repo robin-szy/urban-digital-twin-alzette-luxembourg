@@ -132,18 +132,19 @@ def select_reach(reach_id: str) -> list[dict]:
         # to a stack without that plugin would leave an unregistered task in the queue.
         return importlib.util.find_spec(task_name.split(".", 1)[0]) is not None
 
-    sent = []
+    import uuid
+
+    # The task ids are chosen here, BEFORE anything is sent, and recorded first: the worker
+    # stamps started_at / finished_at onto these rows (see _stamp_follower below), and a
+    # task that started before its row existed would lose its start time (2026-11-26).
+    chains, sent = [], []
     for dataset, task_name in FOLLOWERS.items():
         names = [task_name, *[name for name in THEN.get(dataset, ()) if installed(name)]]
         # immutable: each task starts with its own defaults, not the previous task's result.
-        result = chain(*[app.signature(name, immutable=True) for name in names]).apply_async()
-        # apply_async returns the LAST task's result; walk the parents back to the first.
-        ids = []
-        while result is not None:
-            ids.append(result.id)
-            result = result.parent
-        for name, task_id in zip(names, reversed(ids)):
-            sent.append({"dataset": dataset, "task": name, "task_id": task_id})
+        signatures = [app.signature(name, immutable=True).set(task_id=str(uuid.uuid4())) for name in names]
+        chains.append(chain(*signatures))
+        for name, signature in zip(names, signatures):
+            sent.append({"dataset": dataset, "task": name, "task_id": signature.id})
 
     # Remember what was sent for this reach, so the map can show which modules are still
     # computing (GET /aoi/current/status.json). Replaces the previous selection's rows.
@@ -156,6 +157,8 @@ def select_reach(reach_id: str) -> list[dict]:
             conn.execute(aoi_followers.insert(), [
                 {"task_id": s["task_id"], "reach_id": reach_id, "dataset": s["dataset"], "task": s["task"],
                  "position": i} for i, s in enumerate(sent)])
+    for follower_chain in chains:
+        follower_chain.apply_async()
     return sent
 
 
@@ -246,6 +249,45 @@ def ensure_fallback_reach() -> dict:
     """
     spec = fallback_reach_spec()
     return build_aoi_reach(spec.river, spec.km_start, spec.km_end, pinned=True)
+
+
+def _follower_task_names() -> set[str]:
+    from eddie_aoi.resolver import FOLLOWERS, THEN
+
+    return set(FOLLOWERS.values()) | {name for names in THEN.values() for name in names}
+
+
+def _stamp_follower(task_id: str | None, column: str) -> None:
+    """Write now() into one aoi_followers row's started_at / finished_at. Never raises."""
+    if not task_id:
+        return
+    engine = None
+    try:
+        import sqlalchemy as sa
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(sa.text(f"UPDATE aoi_followers SET {column} = now() WHERE task_id = :id"),
+                         {"id": task_id})
+    except Exception:  # pylint: disable=broad-except  # timing is cosmetic; never fail a task for it
+        log.exception("Could not record %s for task %s", column, task_id)
+    finally:
+        if engine is not None:
+            engine.dispose()          # the 100-connection limit is shared by the whole stack
+
+
+@signals.task_prerun.connect
+def _follower_started(sender=None, task_id=None, **_kwargs):
+    """Start time of an AOI follower task, for the map's status banner (2026-11-26)."""
+    if getattr(sender, "name", None) in _follower_task_names():
+        _stamp_follower(task_id, "started_at")
+
+
+@signals.task_postrun.connect
+def _follower_finished(sender=None, task_id=None, **_kwargs):
+    """Finish time (success or failure) of an AOI follower task."""
+    if getattr(sender, "name", None) in _follower_task_names():
+        _stamp_follower(task_id, "finished_at")
 
 
 @signals.worker_ready.connect

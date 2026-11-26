@@ -293,8 +293,38 @@ def reach_variants_geojson(reach_id):
 FOLLOWER_LABELS = {
     "eddie_building_population.tasks.compute_building_population": "Population (input for the water fees)",
     "eddie_water_fees.tasks.compute_water_fees": "Water fees",
-    "eddie_flood_costs.tasks.recompute_for_current_reach": "Flood depths and flood costs",
+    "eddie_flood_costs.tasks.load_cached_for_current_reach": "Flood depths and costs: earlier result",
+    "eddie_flood_costs.tasks.recompute_for_current_reach": "Flood depths and flood costs: fresh run",
 }
+
+
+def _follower_summary(result, task: str) -> str | None:
+    """One short line of what a finished follower produced, for the banner (2026-11-26)."""
+    if result.state != "SUCCESS" or not isinstance(result.result, dict):
+        return None
+    value = result.result
+
+    def count(part):
+        return part.get("buildings") if isinstance(part, dict) else None
+
+    if task.endswith("load_cached_for_current_reach"):
+        run = value.get("cached")
+        if not run:
+            return value.get("reason") or "no earlier result for this area"
+        return f"run {run} shown at once, while the fresh run computes"
+    if task.endswith("recompute_for_current_reach"):
+        parts = []
+        if count(value.get("depths")) is not None:
+            parts.append(f"depths for {count(value['depths']):,} buildings")
+        if count(value.get("costs")) is not None:
+            parts.append(f"costs for {count(value['costs']):,} buildings")
+        return ", ".join(parts) or None
+    if value.get("buildings") is not None:
+        text = f"{value['buildings']:,} buildings"
+        if value.get("est_population") is not None:
+            text += f", about {round(value['est_population']):,} people"
+        return text
+    return None
 
 
 def _flood_run_is_for(reach_id: str) -> bool:
@@ -322,6 +352,8 @@ def _follower_state(result, task: str, reach_id: str = "") -> tuple[str, str | N
     if state != "SUCCESS":
         return "computing", None
     value = result.result if isinstance(result.result, dict) else {}
+    if task.endswith("load_cached_for_current_reach") and not value.get("cached"):
+        return "none", None       # nothing cached for this reach; the fresh run follows
     if task.endswith("recompute_for_current_reach") and isinstance(value.get("damage"), dict) \
             and "skipped" in value["damage"] and not _flood_run_is_for(reach_id):
         # Depths ran; Devika's damage step could not (missing review files): the map shows her
@@ -355,16 +387,25 @@ def current_status():
     with get_engine().connect() as conn:
         reach = current_reach(conn)
         cached = read_cached(conn, reach.reach_id)
-        rows = conn.execute(sa.select(aoi_followers).where(aoi_followers.c.reach_id == reach.reach_id)
+        # elapsed_s: seconds since the worker started the task, up to its finish (or up to now
+        # while it runs); measured in the database, so the browser's clock does not matter.
+        elapsed = sa.func.extract("epoch", sa.func.coalesce(aoi_followers.c.finished_at, sa.func.now())
+                                  - aoi_followers.c.started_at).label("elapsed_s")
+        rows = conn.execute(sa.select(aoi_followers, elapsed).where(aoi_followers.c.reach_id == reach.reach_id)
                             .order_by(aoi_followers.c.position)).mappings().all()
     modules = []
     if rows:
         from eddie.tasks import app  # backend and worker both have the Celery app
 
         for row in rows:
-            state, note = _follower_state(app.AsyncResult(row["task_id"]), row["task"], reach.reach_id)
+            result = app.AsyncResult(row["task_id"])
+            state, note = _follower_state(result, row["task"], reach.reach_id)
             modules.append({"dataset": row["dataset"], "task": row["task"], "task_id": row["task_id"],
-                            "label": FOLLOWER_LABELS.get(row["task"], row["task"]), "state": state, "note": note})
+                            "label": FOLLOWER_LABELS.get(row["task"], row["task"]), "state": state, "note": note,
+                            # Timing (2026-11-26): started is False while the task waits in its chain.
+                            "started": row["started_at"] is not None,
+                            "elapsed_s": None if row["elapsed_s"] is None else round(float(row["elapsed_s"]), 1),
+                            "summary": _follower_summary(result, row["task"])})
     # The 3D buildings of the reach (eddie_buildings): prepared on disk in a separate backend
     # process the first time this route sees the reach, so they usually load at once in the map.
     try:

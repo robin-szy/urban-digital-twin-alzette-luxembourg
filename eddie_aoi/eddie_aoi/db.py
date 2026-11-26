@@ -137,6 +137,10 @@ aoi_followers = sa.Table(
     sa.Column("task", sa.Text, nullable=False),
     sa.Column("position", sa.SmallInteger, nullable=False),
     sa.Column("sent_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+    # When the worker started / finished the task (Celery signals in eddie_aoi.tasks), so the
+    # map can show how long each module takes (2026-11-26). NULL while it waits in its chain.
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 
@@ -157,8 +161,11 @@ def get_engine(url: str | None = None) -> sa.Engine:
 def create_schema(conn: sa.Connection) -> None:
     """Create the AOI tables if they are absent.
 
-    Additive only: it never drops or alters an existing table, so running it
-    against a database that already has the tables is safe.
+    Additive only: it never drops a table or a column, so running it against a
+    database that already has the tables is safe. Columns added to a table after
+    it first shipped are added here with ADD COLUMN IF NOT EXISTS.
     """
     conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS postgis"))
     metadata.create_all(conn, checkfirst=True)
+    for column in ("started_at", "finished_at"):   # aoi_followers, 2026-11-26
+        conn.execute(sa.text(f"ALTER TABLE aoi_followers ADD COLUMN IF NOT EXISTS {column} timestamptz"))

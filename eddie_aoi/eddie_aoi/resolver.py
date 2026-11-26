@@ -81,7 +81,9 @@ FOLLOWERS: dict[str, str] = {
     "building_population": "eddie_building_population.tasks.compute_building_population",
     # Depths for the selected reach; the damage steps run once Devika's missing HQextreme
     # review files are on the host (until then reported as skipped, not failed).
-    "flood_costs": "eddie_flood_costs.tasks.recompute_for_current_reach",
+    # 2026-11-26: first the newest earlier run of this reach is published from disk (seconds),
+    # then the fresh recompute follows in THEN below and replaces it.
+    "flood_costs": "eddie_flood_costs.tasks.load_cached_for_current_reach",
 }
 
 #: follower dataset -> tasks that must run AFTER its follower task has finished, in order,
@@ -93,6 +95,8 @@ THEN: dict[str, tuple[str, ...]] = {
     # there until her task runs again. Chained after the population task, it runs on the
     # newest scope (= the reach just selected) with her default settings (Robin, 2026-11-25).
     "building_population": ("eddie_water_fees.tasks.compute_water_fees",),
+    # The cached flood result is shown first; the fresh run then replaces it (2026-11-26).
+    "flood_costs": ("eddie_flood_costs.tasks.recompute_for_current_reach",),
 }
 
 
