@@ -370,10 +370,14 @@ if importlib.util.find_spec("eddie") is not None:
         """All four steps for the current reach, as one task (AOI change, Robin, 2026-11-20).
 
         Sent automatically when a new reach becomes current (eddie_aoi.resolver.FOLLOWERS).
-        Depths always run. The damage steps run only when their inputs are present: on the
-        project host two review files of the HQextreme extension are missing
-        (hqextreme_review/*.json), so they are reported as skipped - with the reason - rather
-        than failing the depths that did succeed.
+        Depths always run. Damage uses the general route (Devika, 2026-11-26): the reach's own
+        classification (build_classification, AOI "flood_costs") and run_classified_damage, so
+        the costs are computed FOR the reach instead of cut from the km 35-50 run, and the AOI
+        status reports them as ready. If a damage input is missing the damage is reported as
+        skipped - with the reason - and the depths that did succeed stay. The frozen reference
+        route (run_damage_calculation) is unchanged; it is no longer called here because it
+        needs review files that only exist for km 35-50.
+        Afterwards the dynamic stage curve is queued for the new run (its own task).
         """
         # pylint: disable=import-outside-toplevel
         run_id = "reach-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -381,9 +385,15 @@ if importlib.util.find_spec("eddie") is not None:
         loaded = load_depths_to_db(run_id)
         result = {"run_id": run_id, "scope": depth["scope"], "depths": loaded}
         try:
-            result["damage"] = run_damage_calculation(run_id)
-        except FileNotFoundError as exc:
-            result["damage"] = {"skipped": str(exc)}
+            classification = build_classification(run_id, compare=False)
+            result["classification"] = {k: classification.get(k) for k in ("classification", "aoi")}
+            result["damage"] = run_classified_damage(run_id)
+        except Exception as exc:  # pylint: disable=broad-except
+            result["damage"] = {"skipped": f"{type(exc).__name__}: {exc}"}
             return result
         result["costs"] = load_flood_costs_to_db(run_id)
+        try:
+            result["dynamic_curve_task"] = run_dynamic_curve.delay().id
+        except Exception as exc:  # pylint: disable=broad-except
+            result["dynamic_curve_task"] = {"skipped": str(exc)}
         return result

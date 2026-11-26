@@ -196,8 +196,9 @@ The tasks run in the worker and fetch depths from the backend (`FLOOD_COSTS_BACK
 default `http://backend:5000`). Every result carries the run's `dataset_version`; a result of
 an older static run is answered as `stale`. Unknown depths, classes or attributes stay null,
 never 0. Model 3 reads residents, footprint and floors from `building_population` (read only).
-The published run stays the km 35-50 run for now; on another reach the API shows its buildings
-inside that reach only (`partial_reach`), as the static popup does.
+When a reach is selected in the twin, `recompute_for_current_reach` computes the static costs for
+that reach (classification + classified damage), publishes them and queues the stage curve. Until
+that run is published, the API shows the previous run's buildings inside the reach (`partial_reach`).
 
 ## Release deployment and rollback (separate approval)
 
