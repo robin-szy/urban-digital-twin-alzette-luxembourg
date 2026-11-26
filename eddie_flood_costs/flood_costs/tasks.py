@@ -132,6 +132,7 @@ if importlib.util.find_spec("eddie") is not None:
         totals are cut the same way (blueprint._reach_subset). Your tables are unchanged.
         """
         # pylint: disable=import-outside-toplevel
+        from eddie_base_data.ingest import transactional   # was missing (NameError on every publish)
         from eddie_base_data.publish import current_area_filter, recreate_view
 
         # The run id is written into the view as a literal (not a subquery on flood_cost_lookup),
@@ -250,9 +251,119 @@ if importlib.util.find_spec("eddie") is not None:
         with transactional(engine).begin() as conn:
             summary.to_sql(SUMMARY_TABLE, conn, if_exists="replace", index=False)
             lookup.to_sql(LOOKUP_TABLE, conn, if_exists="replace", index=False)
-        return {"run_id": run_id, "dataset_version": document["dataset_version"], "buildings": len(buildings),
-                "layer": publish_view(engine, BUILDINGS_TABLE),
-                "tables": [BUILDINGS_TABLE, SUMMARY_TABLE, LOOKUP_TABLE]}
+        result = {"run_id": run_id, "dataset_version": document["dataset_version"], "buildings": len(buildings),
+                  "layer": publish_view(engine, BUILDINGS_TABLE),
+                  "tables": [BUILDINGS_TABLE, SUMMARY_TABLE, LOOKUP_TABLE]}
+        # The dynamic models read the same run's sample weights from the database (non-fatal).
+        result["dynamic_inputs"] = _publish_dynamic_inputs(engine, run_id, document["dataset_version"], source)
+        return result
+
+    # --- Dynamic flood costs (Models 1-3, stage curve; see dynamic/) -------------------------
+    # Inputs: the published static run (flood_cost_lookup / flood_cost_buildings) and its sample
+    # weights (flood_cost_sample_weights, written below). Depths: the backend's water model,
+    # over HTTP (dynamic/depths.py). Results: flood_cost_dynamic_* tables, read by the API.
+
+    def _publish_dynamic_inputs(engine, run_id, dataset_version, monetary_dir):
+        """Sample weights + JRC parameters of the published run; never fails the static publish."""
+        # pylint: disable=import-outside-toplevel
+        from eddie_base_data.ingest import transactional
+        from .dynamic import store
+        try:
+            with transactional(engine).begin() as conn:
+                return store.publish_inputs(conn, run_id, dataset_version, monetary_dir)
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"skipped": f"{type(exc).__name__}: {exc}"}
+
+    @app.task(name="eddie_flood_costs.tasks.publish_dynamic_inputs")
+    def publish_dynamic_inputs(run_id: str | None = None) -> dict:
+        """The dynamic inputs of a run (default: the published one), e.g. for a run published before them."""
+        # pylint: disable=import-outside-toplevel
+        from eddie.digitaltwin import setup_environment
+        from eddie_base_data.ingest import transactional
+        from .dynamic import store
+
+        engine = setup_environment.get_database()
+        try:
+            with engine.connect() as conn:
+                run = store.published_run(conn)
+            if run_id not in (None, run["run_id"]):
+                raise RuntimeError(f"Run {run_id} is not the published run ({run['run_id']}); publish it first.")
+            with transactional(engine).begin() as conn:
+                report = store.publish_inputs(conn, run["run_id"], run["dataset_version"],
+                                              _use_run(run["run_id"]).stage_path("monetary"))
+        finally:
+            engine.dispose()
+        return {**run, **report}
+
+    def _dynamic_inputs(engine):
+        # pylint: disable=import-outside-toplevel
+        from .dynamic import store
+        from .dynamic.depths import BackendDepths
+        with engine.connect() as conn:
+            run = store.published_run(conn)
+            samples = store.load_samples(conn, run)
+            jrc = store.load_jrc(conn, run)
+            attributes = store.load_attributes(conn, samples)
+        depths = BackendDepths(run, store.samples_signature(samples), len(samples))
+        return run, samples, jrc, attributes, depths
+
+    def _numbers(text, kind=float):
+        return [kind(v) for v in str(text).split(",") if v.strip()]
+
+    @app.task(name="eddie_flood_costs.tasks.run_dynamic_curve")
+    def run_dynamic_curve(stages: str | None = None, durations: str | None = None) -> dict:
+        """Cost per slider stage for the published run -> flood_cost_dynamic_curve(_buildings).
+
+        stages "start:stop:step" in cm (default 0:600:10, the slider), durations "6,24,72" hours.
+        Each new stage is one water-level computation in the backend (a few seconds each).
+        """
+        # pylint: disable=import-outside-toplevel
+        from eddie.digitaltwin import setup_environment
+        from eddie_base_data.ingest import transactional
+        import numpy as np
+        import pandas as pd
+        from .dynamic import jobs, parameters, store
+
+        if stages:
+            start, stop, step = (float(v) for v in stages.split(":"))
+            stage_list = [float(v) for v in np.arange(start, stop + step / 2, step)]
+        else:
+            stage_list = [float(v) for v in parameters.CURVE_STAGES_CM]
+        duration_list = _numbers(durations) if durations else list(parameters.CURVE_DURATIONS_HOURS)
+        engine = setup_environment.get_database()
+        try:
+            run, samples, jrc, _, depths = _dynamic_inputs(engine)
+            totals, buildings, meta = jobs.curve(samples, jrc, depths, stage_list, duration_list)
+            with transactional(engine).begin() as conn:
+                store.write_curve(conn, run, totals, buildings, meta)
+        finally:
+            engine.dispose()          # give the connections back (100-connection limit is shared)
+        top = totals.iloc[-1]
+        return {**run, "stages": len(stage_list), "buildings": meta["buildings"],
+                "tables": [store.CURVE, store.CURVE_BUILDINGS],
+                "model1_at_top_stage_eur2010": None if pd.isna(top["model1_eur2010"]) else float(top["model1_eur2010"])}
+
+    @app.task(name="eddie_flood_costs.tasks.run_dynamic_event")
+    def run_dynamic_event(start: str, end: str, event_id: str | None = None) -> dict:
+        """Models 1-3 over a period of stored gauge readings -> flood_cost_dynamic_event*."""
+        # pylint: disable=import-outside-toplevel
+        from eddie.digitaltwin import setup_environment
+        from eddie_base_data.ingest import transactional
+        import pandas as pd
+        from .dynamic import jobs, store
+
+        engine = setup_environment.get_database()
+        try:
+            run, samples, jrc, attributes, depths = _dynamic_inputs(engine)
+            meta, totals, buildings = jobs.event(samples, jrc, attributes, depths, start, end)
+            event_id = event_id or "event-" + pd.Timestamp(meta["start_utc"]).strftime("%Y%m%dT%H%M") + \
+                "-" + pd.Timestamp(meta["end_utc"]).strftime("%Y%m%dT%H%M")
+            with transactional(engine).begin() as conn:
+                store.write_event(conn, event_id, run, meta, totals, buildings)
+        finally:
+            engine.dispose()
+        return {**run, "event_id": event_id, **{k: v for k, v in meta.items() if k != "assumptions"},
+                "tables": [store.EVENTS, store.EVENT_TOTALS, store.EVENT_BUILDINGS]}
 
     @app.task(name="eddie_flood_costs.tasks.recompute_for_current_reach")
     def recompute_for_current_reach() -> dict:

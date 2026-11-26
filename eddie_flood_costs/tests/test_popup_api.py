@@ -48,6 +48,8 @@ def database(api, monkeypatch):
         queries.append((statement, parameters))
 
     monkeypatch.setattr(module, "_engine", lambda: engine)
+    # No AOI module in these tests: the run covers the current reach (Robin's _reach_subset -> None).
+    monkeypatch.setattr(module, "_reach_subset", lambda: None)
     app.config.pop("FLOOD_COSTS_LOOKUP_PATH")
     yield engine, queries
     engine.dispose()

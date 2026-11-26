@@ -124,6 +124,8 @@ def test_three_scenario_api_and_context_hash_failure(v2_source, monkeypatch, tmp
                          {"v": lookup.to_dict()["dataset_version"]})
         sa.event.listen(engine, "before_cursor_execute", lambda c, cu, sql, p, ctx, many: statements.append(sql))
         monkeypatch.setattr(module, "_engine", lambda: engine)
+        # No AOI module in these tests: the run covers the current reach (Robin's _reach_subset -> None).
+        monkeypatch.setattr(module, "_reach_subset", lambda: None)
     client = app.test_client()
     for s in SCENARIOS:
         assert client.get(f"/flood-costs/summary/{s}.json").status_code == 200

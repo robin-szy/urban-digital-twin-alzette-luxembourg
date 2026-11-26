@@ -200,3 +200,14 @@ def building_popup(buildingid):
     result = build_popup_payload(lookup, buildingid, details, warning)
     return jsonify(result), 200 if result["found"] else 404
 
+
+
+# Dynamic flood costs (Models 1-3, stage curve): routes under /flood-costs/dynamic/..., see
+# dynamic/routes.py. Registered defensively so a problem there can never take the static
+# routes above (and the popup) down with it.
+try:
+    from .dynamic.routes import add_routes as _add_dynamic_routes
+    _add_dynamic_routes(blueprint)
+except Exception as _exc:  # pylint: disable=broad-except
+    import logging
+    logging.getLogger(__name__).warning("Dynamic flood-cost routes not registered: %s", _exc)

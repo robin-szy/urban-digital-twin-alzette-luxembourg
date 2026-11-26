@@ -177,6 +177,28 @@ request caching, fallback templates and Casual-mode integration. Multipart CZML
 entity IDs/areas never stand in for the original financial building ID/area.
 The map-wide damage summary now also accepts HQextreme.
 
+## Dynamic flood costs (Models 1-3, stage curve)
+
+Built like the static costs: inputs from the database, Celery tasks, results in PostGIS, a
+read-only API. Code in `flood_costs/dynamic/`; the maths is moved unchanged from
+`users/devika/dynamic_flood_cost_3models` (beta = 0.3, tau = 24 h for every class; the Model 3
+unit costs are placeholders).
+
+| Step | Where | What |
+|---|---|---|
+| Inputs | `load_flood_costs_to_db` (automatic) or task `publish_dynamic_inputs` | the published run's sample weights and JRC parameters -> `flood_cost_sample_weights`, `flood_cost_jrc_parameters` |
+| Depths | backend, `GET /flood-costs/dynamic/depths.json` | the twin's water model (`eddie_water_level`, REM) at every sample; only the backend has the DEM/REM |
+| Stage curve | task `run_dynamic_curve` (or `POST /flood-costs/dynamic/curve/run`) | cost per slider stage 0-600 cm: Model 1, Model 2 held 6/24/72 h -> `flood_cost_dynamic_curve(_buildings)` |
+| Event | task `run_dynamic_event(start, end)` (or `POST /flood-costs/dynamic/event/run`) | Models 1, 2, 3 over stored gauge readings -> `flood_cost_dynamic_event*` |
+| API | `GET /flood-costs/dynamic/...` | `curve.json`, `stage/<cm>.json`, `stage/<cm>/<id>.json`, `building/<id>/curve.json`, `events.json`, `event/<id>.json`, `event/<id>/<building>.json[?time=]`, `parameters.json` |
+
+The tasks run in the worker and fetch depths from the backend (`FLOOD_COSTS_BACKEND_URL`,
+default `http://backend:5000`). Every result carries the run's `dataset_version`; a result of
+an older static run is answered as `stale`. Unknown depths, classes or attributes stay null,
+never 0. Model 3 reads residents, footprint and floors from `building_population` (read only).
+The published run stays the km 35-50 run for now; on another reach the API shows its buildings
+inside that reach only (`partial_reach`), as the static popup does.
+
 ## Release deployment and rollback (separate approval)
 
 1. Retain the currently served lookup, context, settings and image revision.
