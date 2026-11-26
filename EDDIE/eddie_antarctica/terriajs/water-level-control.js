@@ -229,6 +229,14 @@
       }
       return kind === "rain" && rainVersion ? "rain." + rainVersion : kind;
     });
+    // AOI fix (2026-11-26): the current reach is always part of the init URL ("aoi.<reach_id>";
+    // the backend ignores kinds it does not know). Without it a reach switch often produced the
+    // SAME URL as before: setting location.hash to an unchanged value does nothing, so Terria
+    // kept the old reach until some other toggle (e.g. River centerline) changed the URL.
+    // A new URL per reach also stops Terria from reusing its cached init file of another reach.
+    if (aoiReach) {
+      layerKinds.push("aoi." + aoiReach);
+    }
     return (layerKinds.length ? "layers/" + layerKinds.join(",") + "/" : "") +
       (showSlope ? "slope/" : "") + (showRem ? "rem/" : "") + (kinds.length ? "names/" + kinds.join(",") + "/" : "");
   }
@@ -2439,7 +2447,7 @@
   // ---------------------------------------------------------------------------
   // AOI change (Robin, 2026-11-25): the area-of-interest selector in the panel, replacing the
   // WPS "AOI selector" of Explore data. It uses the AOI module's REST routes:
-  //   POST /aoi/reach {river, km_start, km_end} builds (or reuses) a reach and makes it current;
+  //   POST /aoi/reach {km_start, km_end} builds (or reuses) an Alzette reach and makes it current;
   //   GET /aoi/reaches lists the reaches already built, to switch back to one at once.
   // Once a reach is current, the status banner (refreshAoiStatus) shows what is computing, and
   // the map reloads its layers for the new reach.
@@ -2508,12 +2516,11 @@
       selectReach(choice[0], choice[1], choice[2]);
     }));
 
-    // A new area: river and kilometre range, validated by the backend before anything is built.
-    parent.appendChild(element("div", "wl-note", "New area (river kilometres):"));
-    var river = document.createElement("input");
-    river.type = "text";
-    river.id = "water-level-control-aoi-river";
-    river.value = "Alzette";
+    // A new area: a kilometre range of the Alzette, validated by the backend before anything is
+    // built. The river is fixed to the Alzette (2026-11-26); its first and last marker come
+    // from GET /aoi/river.json and limit the km fields.
+    var riverNote = element("div", "wl-note", "New area: Alzette, river kilometres (one decimal):");
+    parent.appendChild(riverNote);
     var kmFrom = document.createElement("input");
     kmFrom.type = "number";
     kmFrom.id = "water-level-control-aoi-from";
@@ -2524,7 +2531,21 @@
     kmTo.id = "water-level-control-aoi-to";
     kmTo.step = "0.1";
     kmTo.min = "0";
-    [["River", river], ["From km", kmFrom], ["To km", kmTo]].forEach(function (entry) {
+    fetch(BACKEND_URL + "/aoi/river.json")
+      .then(function (response) { return response.json(); })
+      .then(function (info) {
+        if (info.km_start === null || info.km_end === null) {
+          return;
+        }
+        [kmFrom, kmTo].forEach(function (input) {
+          input.min = String(info.km_start);
+          input.max = String(info.km_end);
+        });
+        riverNote.textContent = "New area: " + info.river + " km " + info.km_start + "–" + info.km_end +
+          " (one decimal, a marker every 100 m):";
+      })
+      .catch(function () { /* backend unreachable: the backend still checks the range */ });
+    [["From km", kmFrom], ["To km", kmTo]].forEach(function (entry) {
       var field = element("label", "wl-field");
       field.appendChild(element("span", null, entry[0]));
       field.appendChild(entry[1]);
@@ -2535,7 +2556,7 @@
         note.textContent = "Enter both kilometres.";
         return;
       }
-      selectReach(river.value.trim(), kmFrom.value, kmTo.value);
+      selectReach("Alzette", kmFrom.value, kmTo.value);
     }));
     parent.appendChild(note);
 

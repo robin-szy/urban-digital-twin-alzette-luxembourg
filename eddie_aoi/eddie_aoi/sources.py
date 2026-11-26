@@ -109,6 +109,26 @@ def available_rivers(sources: RiverSources) -> list[str]:
     return sorted(markers[sources.marker_river_field].dropna().unique())
 
 
+_KM_RANGE_CACHE: dict = {}
+
+
+def river_km_range(sources: RiverSources, river: str) -> tuple[float, float]:
+    """(first, last) kilometre marker of a river, for refusing a selection off its markers.
+
+    Cached per source file and modification time: the backend asks on every selection, and
+    reading the GeoPackage takes about a second.
+    """
+    path = Path(sources.markers_path)
+    key = (str(path), path.stat().st_mtime, river)
+    if key not in _KM_RANGE_CACHE:
+        markers = gpd.read_file(path, layer=sources.marker_layer)
+        kms = markers.loc[markers[sources.marker_river_field] == river, sources.marker_km_field]
+        if kms.empty:
+            raise PreparationError(f"River {river!r} not found in {path}.")
+        _KM_RANGE_CACHE[key] = (round(float(kms.min()), 3), round(float(kms.max()), 3))
+    return _KM_RANGE_CACHE[key]
+
+
 def read_markers(
     sources: RiverSources, river: str, km_start: float, km_end: float
 ) -> gpd.GeoDataFrame:

@@ -110,41 +110,36 @@ def _bad_request(message, **extra):
 
 @blueprint.route("/aoi/reach", methods=["POST"])
 def submit_reach():
-    """Build a reach for a river and kilometre range.
+    """Build a reach of the Alzette for a kilometre range.
 
-    JSON: {"river": "Alzette", "km_start": 35.0, "km_end": 50.0}
+    JSON: {"km_start": 35.0, "km_end": 50.0}  ("river" may be sent, but only "Alzette")
 
-    The selection is validated BEFORE any work starts, so an invalid request
-    is refused without touching the currently served area of interest.
+    The selection is validated BEFORE any work starts (validate_selection, task 12.2),
+    so an invalid request is refused with the reason, without touching the currently
+    served area of interest.
     """
     from eddie_aoi.errors import PreparationError
+    from eddie_aoi.reach import RIVER, validate_selection
     from eddie_aoi.reach import reach_id as make_reach_id
-    from eddie_aoi.reach import validate_bounds
-    from eddie_aoi.sources import available_rivers
+    from eddie_aoi.sources import river_km_range
     from eddie_aoi.tasks import build_aoi_reach, configured_sources
 
     payload = request.get_json(silent=True) or {}
-    river = payload.get("river")
-    km_start = payload.get("km_start")
-    km_end = payload.get("km_end")
 
-    if river is None or km_start is None or km_end is None:
-        return _bad_request(
-            "Provide 'river', 'km_start' and 'km_end'.",
-            example={"river": "Alzette", "km_start": 35.0, "km_end": 50.0},
-        )
-
-    # Validate against the marker source before queueing any work.
+    # The Alzette's first and last marker, read from the marker source.
     try:
-        rivers = available_rivers(configured_sources())
+        km_range = river_km_range(configured_sources(), RIVER)
     except Exception as exc:  # the source may be missing or unreadable
         log.warning("Could not read the kilometre-marker source: %s", exc)
-        rivers = None
+        km_range = None
 
     try:
-        validate_bounds(river, km_start, km_end, rivers)
+        river, km_start, km_end = validate_selection(
+            payload.get("river"), payload.get("km_start"), payload.get("km_end"), km_range)
     except PreparationError as exc:
-        return _bad_request(str(exc), available_rivers=rivers)
+        return _bad_request(str(exc), river=RIVER,
+                            km_range=list(km_range) if km_range else None,
+                            example={"km_start": 35.0, "km_end": 50.0})
 
     # select=True: once built, it becomes the current reach and the modules recompute.
     task = build_aoi_reach.delay(river, float(km_start), float(km_end), select=True)
@@ -161,6 +156,21 @@ def submit_reach():
         ),
         202,
     )
+
+
+@blueprint.route("/aoi/river.json", methods=["GET"])
+def river_info():
+    """The river the twin covers and its first / last kilometre marker, for the panel's km fields."""
+    from eddie_aoi.reach import KM_STEP, RIVER
+    from eddie_aoi.sources import river_km_range
+    from eddie_aoi.tasks import configured_sources
+
+    try:
+        low, high = river_km_range(configured_sources(), RIVER)
+    except Exception as exc:  # pylint: disable=broad-except
+        log.warning("Could not read the kilometre-marker source: %s", exc)
+        low = high = None
+    return jsonify({"status": "success", "river": RIVER, "km_start": low, "km_end": high, "km_step": KM_STEP})
 
 
 @blueprint.route("/aoi/reach/<reach_id>", methods=["GET"])

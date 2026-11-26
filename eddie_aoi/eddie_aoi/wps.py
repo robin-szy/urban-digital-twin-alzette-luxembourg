@@ -39,27 +39,6 @@ def _backend_base_url() -> str:
     url = (pywps_config.get_config_value("server", "url") or "").strip()
     return url[: -len("/wps")] if url.endswith("/wps") else url.rstrip("/")
 
-#: Shown in the form when the marker source cannot be read for a live list.
-FALLBACK_RIVER_HINT = "Alzette"
-
-
-def _known_rivers() -> list[str] | None:
-    """River names from the marker source, for a dropdown rather than free text.
-
-    Returns None when the source cannot be read, so the process still
-    describes itself (and the form still renders) with a plain text field.
-    """
-    try:
-        from eddie_aoi.sources import available_rivers
-        from eddie_aoi.tasks import configured_sources
-
-        rivers = available_rivers(configured_sources())
-        return rivers or None
-    except Exception as exc:  # the source may be absent in some deployments
-        log.warning("Could not list rivers for the WPS form: %s", exc)
-        return None
-
-
 def _as_km(value, label: str) -> float:
     """Coerce a kilometre field to a number.
 
@@ -83,21 +62,18 @@ class BuildAoiReach(Process):
     """Build the AOI for a river and kilometre range."""
 
     def __init__(self):
-        rivers = _known_rivers()
+        # The river is fixed to the Alzette (2026-11-26); kept as an input with that one value
+        # so existing WPS clients still send a valid request.
+        from eddie_aoi.reach import RIVER
+
         river_input = LiteralInput(
             "river",
             "River",
             data_type="string",
-            abstract=(
-                "Watercourse to take the kilometre range from."
-                if rivers
-                else "Watercourse name as spelled in the kilometre-marker source, "
-                f"for example {FALLBACK_RIVER_HINT}."
-            ),
-            default=rivers[0] if rivers and FALLBACK_RIVER_HINT not in rivers
-            else FALLBACK_RIVER_HINT,
-            allowed_values=rivers,
-            min_occurs=1,
+            abstract=f"Always {RIVER}: the twin covers this river only.",
+            default=RIVER,
+            allowed_values=[RIVER],
+            min_occurs=0,
             max_occurs=1,
         )
 
@@ -219,16 +195,24 @@ class BuildAoiReach(Process):
         from eddie_aoi.reach import reach_id as make_reach_id
         from eddie_aoi.tasks import build_aoi_reach
 
-        river = request.inputs["river"][0].data
+        from eddie_aoi.reach import RIVER, validate_selection
+        from eddie_aoi.sources import river_km_range
+        from eddie_aoi.tasks import configured_sources
+
+        river = request.inputs["river"][0].data if "river" in request.inputs else RIVER
         km_start = _as_km(request.inputs["km_start"][0].data, "Start kilometre")
         km_end = _as_km(request.inputs["km_end"][0].data, "End kilometre")
+        # The same checks as POST /aoi/reach (task 12.2), before anything is built.
+        try:
+            km_range = river_km_range(configured_sources(), RIVER)
+        except Exception:  # pylint: disable=broad-except  # source unreadable: range not checked
+            km_range = None
+        river, km_start, km_end = validate_selection(river, km_start, km_end, km_range)
 
         response.update_status(
             f"Building the area of interest for {river} km {km_start}-{km_end}", 10
         )
 
-        # Validation happens inside build_aoi_reach via validate_bounds, so a
-        # bad range raises before anything is written.
         # select=True: once built, it becomes the current reach and the modules recompute.
         result = build_aoi_reach(river, km_start, km_end, select=True)
         reach_id = result["reach_id"]

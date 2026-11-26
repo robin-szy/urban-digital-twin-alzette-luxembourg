@@ -194,6 +194,17 @@ def test_no_warning_when_nothing_is_degraded(conn, reach, tmp_path):
     assert not any("SUBSTITUTE" in m["name"] for m in group["members"])
 
 
+def test_the_default_area_is_named_as_such_and_a_selection_is_not(conn, populated):
+    """Task 12.5: the fallback (nothing selected yet) is flagged, a selected reach is not."""
+    default = catalog_fragment(conn, populated.reach_id, BASE, is_fallback=True)["catalog"][0]
+    selected = catalog_fragment(conn, populated.reach_id, BASE)["catalog"][0]
+
+    assert default["name"].endswith("(default - no reach selected yet)")
+    assert "No reach has been selected yet" in default["description"]
+    assert "default" not in selected["name"]
+    assert "No reach has been selected yet" not in selected.get("description", "")
+
+
 def test_base_url_trailing_slash_is_tolerated(conn, populated):
     group = catalog_fragment(conn, populated.reach_id, BASE + "/")["catalog"][0]
     assert "//aoi/" not in group["members"][0]["url"]

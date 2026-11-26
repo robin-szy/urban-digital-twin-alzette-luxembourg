@@ -37,7 +37,7 @@ def test_unregistered_dataset_is_rejected_with_the_registered_names():
         ("building_population", "corridor_500"),
         ("flood_costs", "corridor_500"),
         ("landcover", "corridor_300"),
-        ("buildings", "corridor_300"),
+        ("buildings", "corridor_500"),   # 300 -> 500 m with task 12.13 (3D buildings per reach)
         ("addresses", "corridor_300"),
         ("water_gauges", "buffer_1000"),
         ("precipitation", "watersheds"),

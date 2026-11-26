@@ -134,12 +134,20 @@ if importlib.util.find_spec("eddie") is not None:
         # pylint: disable=import-outside-toplevel
         from eddie_base_data.ingest import transactional   # was missing (NameError on every publish)
         from eddie_base_data.publish import current_area_filter, recreate_view
+        from eddie_aoi.startup import fallback_reach_id
 
         # The run id is written into the view as a literal (not a subquery on flood_cost_lookup),
         # because the next lines replace flood_cost_lookup, which a dependent view would block.
         run = "run_id = '" + str(run_id).replace("'", "''") + "'"
+        # 2026-11-26: since your damage runs per reach, a run of the CURRENT reach is shown whole.
+        # Only the corridor cut hid most of it: your study area is the 500 m corridor WIDENED by
+        # the flood extents, so e.g. km 44-46 showed 10 of its 127 buildings. The cut now applies
+        # only while the loaded run belongs to another reach (just after a switch, until the new
+        # run is in). Both checks are live, so a reach switch needs no rebuild of the view.
+        fallback = fallback_reach_id().replace("'", "''")
+        own_reach = f"reach_id = COALESCE((SELECT reach_id FROM aoi_current WHERE id = 1), '{fallback}')"
         with transactional(engine).begin() as conn:
-            recreate_view(conn, BUILDINGS_TABLE, f"{run} AND {current_area_filter(conn)}")
+            recreate_view(conn, BUILDINGS_TABLE, f"{run} AND ({own_reach} OR {current_area_filter(conn)})")
 
     @app.task(name="eddie_flood_costs.tasks.run_depth_reconstruction")
     def run_depth_reconstruction(run_id: str | None = None) -> dict:

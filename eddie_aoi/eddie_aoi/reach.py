@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from shapely.geometry import LineString
 
 from eddie_aoi.constants import (
+    MARKER_SELECTION_KM_TOLERANCE,
     METRIC_CRS,
     REACH_ID_DIGITS,
     REACH_ID_PRECISION_M,
@@ -92,6 +93,59 @@ def validate_bounds(
             f"River {river!r} not found in the kilometre-marker source. "
             f"Available: {sorted(available_rivers)}"
         )
+
+
+#: The one river the twin covers. Not a user choice (Robin, 2026-11-26: "Let's not make the
+#: river parametrable. Fix it to Alzette."). The reach model itself stays river-generic.
+RIVER = "Alzette"
+
+#: The marker source has one Alzette marker every 100 m, so a selection must land on one.
+KM_STEP = 0.1
+
+
+def validate_selection(
+    river: str | None,
+    km_start,
+    km_end,
+    km_range: tuple[float, float] | None,
+) -> tuple[str, float, float]:
+    """Check a user's selection before any build starts (task 12.2).
+
+    Refuses another river, non-numbers, a reversed range, kilometres outside the
+    Alzette's markers (``km_range``, from the marker source; not checked when the
+    source could not be read) and kilometres between two markers. Returns the
+    (river, km_start, km_end) to build. Raises PreparationError with the reason.
+    """
+    if river not in (None, "", RIVER):
+        raise PreparationError(f"Only the {RIVER} is available; got river {river!r}.")
+    values = []
+    for label, value in (("km_start", km_start), ("km_end", km_end)):
+        if value is None or value == "":
+            raise PreparationError(f"Provide '{label}'.")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise PreparationError(f"'{label}' must be a number, got {value!r}.") from None
+        if not math.isfinite(number):
+            raise PreparationError(f"'{label}' must be finite, got {value!r}.")
+        values.append(number)
+    start, end = values
+    validate_bounds(RIVER, start, end)
+    if km_range is not None:
+        low, high = km_range
+        for label, number in (("km_start", start), ("km_end", end)):
+            if number < low - MARKER_SELECTION_KM_TOLERANCE or number > high + MARKER_SELECTION_KM_TOLERANCE:
+                raise PreparationError(
+                    f"{label} {number:g} is outside the {RIVER}'s kilometre markers "
+                    f"(km {low:g}-{high:g})."
+                )
+    for label, number in (("km_start", start), ("km_end", end)):
+        if abs(number / KM_STEP - round(number / KM_STEP)) * KM_STEP > MARKER_SELECTION_KM_TOLERANCE:
+            raise PreparationError(
+                f"{label} {number:g} lies between two markers; the {RIVER} has one every "
+                f"{KM_STEP * 1000:.0f} m (use one decimal, e.g. {round(number, 1):g})."
+            )
+    return RIVER, round(start, 1), round(end, 1)
 
 
 @dataclass(frozen=True)
