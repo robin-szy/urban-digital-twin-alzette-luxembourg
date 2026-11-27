@@ -39,9 +39,9 @@ from .rain_fee import DEFAULT_RAINWATER_UNIT_PRICE, rain_table
 from .scenarios import (
     DEFAULT_DISTANCE_THRESHOLD_M,
     DEFAULT_FLOOD_RISK_BASE_FEE,
-    DEFAULT_LITERS_PER_PERSON,
+    DEFAULT_M3_PER_PERSON,
     DEFAULT_QUALITY_UNIT_PRICE,
-    DEFAULT_UNIT_PRICE_PER_LITER,
+    DEFAULT_UNIT_PRICE_PER_M3,
     DEFAULT_USABLE_SPACE_PCT,
     consumption_table,
     flood_risk_table,
@@ -92,7 +92,6 @@ COLUMNS: dict[str, str] = {
     "pollution_multiplier": "double precision",
     "water_quality_charge_eur": "double precision",
     # Scenario 5, water consumption by population.
-    "water_consumption_liters": "double precision",
     "water_consumption_m3": "double precision",
     "water_consumption_cost_eur": "double precision",
 }
@@ -312,8 +311,8 @@ def compute_water_fees(
     distance_threshold: float = DEFAULT_DISTANCE_THRESHOLD_M,
     flood_risk_base_fee: float = DEFAULT_FLOOD_RISK_BASE_FEE,
     quality_unit_price: float = DEFAULT_QUALITY_UNIT_PRICE,
-    liters_per_person: float = DEFAULT_LITERS_PER_PERSON,
-    unit_price_per_liter: float = DEFAULT_UNIT_PRICE_PER_LITER,
+    m3_per_person: float = DEFAULT_M3_PER_PERSON,
+    unit_price_per_m3: float = DEFAULT_UNIT_PRICE_PER_M3,
     usable_space_pct: float = DEFAULT_USABLE_SPACE_PCT,
     reach_id: str | None = None,
     variant_key: str | None = None,
@@ -379,8 +378,8 @@ def compute_water_fees(
     flood = flood_risk_table(buildings, markers=markers, distance_threshold=distance_threshold,
                              base_fee=flood_risk_base_fee)
     quality = water_quality_table(buildings, unit_price=quality_unit_price)
-    consumption = consumption_table(buildings, liters_per_person=liters_per_person,
-                                    unit_price_per_liter=unit_price_per_liter,
+    consumption = consumption_table(buildings, m3_per_person=m3_per_person,
+                                    unit_price_per_m3=unit_price_per_m3,
                                     usable_space_pct=usable_space_pct)
     values = fees.merge(rain, on="building_id", how="inner", validate="one_to_one")
     for extra in (flood, quality, consumption):
@@ -407,10 +406,12 @@ def compute_water_fees(
     in_zone = int((values["flood_risk_fee_eur"] > 0).sum())
     print(f" -> Flood-risk levy: {in_zone} buildings within {distance_threshold:g} m, "
           f"{values['flood_risk_fee_eur'].sum():,.2f} EUR at {flood_risk_base_fee:g} EUR")
+    bands = values["pollution_multiplier"].value_counts().sort_index()
     print(f" -> Water-quality surcharge: {values['water_quality_charge_eur'].sum():,.2f} EUR "
-          f"at {quality_unit_price}/m²")
+          f"at {quality_unit_price}/m² per multiplier unit "
+          f"({', '.join(f'{band:g}: {count} buildings' for band, count in bands.items())})")
     print(f" -> Water consumption: {values['water_consumption_m3'].sum():,.0f} m³, "
-          f"{values['water_consumption_cost_eur'].sum():,.2f} EUR at {unit_price_per_liter}/l")
+          f"{values['water_consumption_cost_eur'].sum():,.2f} EUR at {unit_price_per_m3}/m\u00b3")
     return {
         "table": TABLE,
         "layer": layer,

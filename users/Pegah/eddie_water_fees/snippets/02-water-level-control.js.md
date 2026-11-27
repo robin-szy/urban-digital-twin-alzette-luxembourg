@@ -33,7 +33,7 @@ these two lines (around line 2504 in the file as it is now):
     }
 
     // Scenario 3-5 parameters. Before this, only the backend defaults could be used
-    // (150 EUR at 50 m, 2.5 EUR/m2, 160 l/person, 0.005 EUR/l, 80 % usable floor space).
+    // (150 EUR at 50 m, 0.5 EUR/m2 per multiplier unit, 0.16 m3/person, 5 EUR/m3, 80 %).
     function fees15Number(id, value, min, max, step) {
       var input = document.createElement("input");
       input.type = "number";
@@ -103,14 +103,16 @@ these two lines (around line 2504 in the file as it is now):
     settingRow(fees15Table, "Flood levy", floodFee, "€");
 
     fees15Heading("Scenario 4 · water-quality surcharge");
-    var qualityPrice = fees15Number("water-level-control-fees15-quality-price", 2.5, 0, 1000, 0.1);
+    var qualityPrice = fees15Number("water-level-control-fees15-quality-price", 0.5, 0, 1000, 0.05);
     settingRow(fees15Table, "Quality fee", qualityPrice, "€/m²");
 
     fees15Heading("Scenario 5 · water consumption");
-    var litersPerson = fees15Number("water-level-control-fees15-liters", 160, 0, 10000, 10);
-    settingRow(fees15Table, "Use per person", litersPerson, "l");
-    var literPrice = fees15Number("water-level-control-fees15-liter-price", 0.005, 0, 100, 0.001);
-    settingRow(fees15Table, "Use fee", literPrice, "€/l");
+    // In m³ and €/m³ like the other scenarios: 0.16 m³ is the source model's 160 l, and
+    // 5 €/m³ is its 0.005 €/l.
+    var m3Person = fees15Number("water-level-control-fees15-liters", 0.16, 0, 100, 0.01);
+    settingRow(fees15Table, "Use per person", m3Person, "m³");
+    var m3Price = fees15Number("water-level-control-fees15-liter-price", 5, 0, 1000, 0.5);
+    settingRow(fees15Table, "Use fee", m3Price, "€/m³");
     var usableSpace = fees15Number("water-level-control-fees15-usable", 0.8, 0, 1, 0.05);
     settingRow(fees15Table, "Usable floor space", usableSpace, "0-1");
 
@@ -149,8 +151,8 @@ these two lines (around line 2504 in the file as it is now):
           distance_threshold: Number(floodDistance.value),
           flood_risk_base_fee: Number(floodFee.value),
           quality_unit_price: Number(qualityPrice.value),
-          liters_per_person: Number(litersPerson.value),
-          unit_price_per_liter: Number(literPrice.value),
+          m3_per_person: Number(m3Person.value),
+          unit_price_per_m3: Number(m3Price.value),
           usable_space_pct: Number(usableSpace.value),
           gauge_start: gaugeFrom.value || null,
           gauge_end: gaugeTo.value || null,

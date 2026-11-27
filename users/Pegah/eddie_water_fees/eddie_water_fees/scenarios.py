@@ -11,14 +11,17 @@ The three water-fee scenarios that ``main.py`` runs after the 15-minute tariff
 
 * **scenario 4, water-quality surcharge** — ``simple_model_fourth_scenario.py``:
 
-      charge = footprint (m²) × pollution multiplier × 2.5 €/m²
+      charge = footprint (m²) × pollution multiplier × 0.5 €/m²
 
-  with the multiplier of OSM: 3.0 industrial, 1.0 residential, 2.0 for anything
-  else (commercial, blank, unclassified), exactly as the source model.
+  with 3.0 for an industrial OSM ``type``, 1.0 for a residential building (the
+  cadastre's ``building_type``, OSM tag as fallback), 2.0 for anything else
+  (commercial, blank, unclassified). The unit price is 0.5 €/m², not the source
+  model's 2.5: see the note under DEFAULT_QUALITY_UNIT_PRICE.
 
 * **scenario 5, water consumption** — ``simple_model_fifth_scenario.py``:
-  residential buildings pay 160 l per person, non-residential buildings pay
-  160/3 l per m² of usable floor space (80 % of footprint × floors), at 0.005 €/l.
+  residential buildings consume 0.16 m³ (160 l) per person, non-residential
+  buildings 0.16/3 m³ per m² of usable floor space (80 % of footprint × floors),
+  at 5 €/m³ - m³ and €/m³ like the other scenarios.
 
 Everything here is a table of the columns to write, one row per building, keyed on
 the building id, like ``rain_fee.rain_table``. Nothing is written from this module:
@@ -47,11 +50,14 @@ WATERCOURSE_SEARCH_M = 3000.0
 # Scenario 3 defaults (main.py).
 DEFAULT_DISTANCE_THRESHOLD_M = 50.0
 DEFAULT_FLOOD_RISK_BASE_FEE = 150.0
-# Scenario 4 default (main.py).
-DEFAULT_QUALITY_UNIT_PRICE = 2.5
-# Scenario 5 defaults (main.py).
-DEFAULT_LITERS_PER_PERSON = 160.0
-DEFAULT_UNIT_PRICE_PER_LITER = 0.005
+# Scenario 4 default, per m² of footprint per multiplier unit: the standard (2.0) band
+# pays 1 EUR/m², which is inside the 0.4-2.0 EUR/m² a year of a real stormwater levy.
+# The source model's 2.5 charged 5 EUR/m² and made this scenario dominate the run.
+DEFAULT_QUALITY_UNIT_PRICE = 0.5
+# Scenario 5 defaults, in m³ like the other scenarios: main.py's 160 l per person and
+# 0.005 EUR/l are 0.16 m³ and 5 EUR/m³.
+DEFAULT_M3_PER_PERSON = 0.16
+DEFAULT_UNIT_PRICE_PER_M3 = 5.0
 DEFAULT_USABLE_SPACE_PCT = 0.80
 
 ID_COLUMNS = ("row_id", "gml_id", "buildingid", "localid")
@@ -180,12 +186,38 @@ def load_osm_types(buildings, osm_path: str | Path = OSM_GPKG) -> pd.Series:
     return joined["type"].reindex(frame.index).fillna("").astype(str)
 
 
-def pollution_multiplier(osm_type: pd.Series) -> np.ndarray:
-    """The source model's multiplier: 3.0 industrial, 1.0 residential, else 2.0."""
-    text = osm_type.fillna("").astype(str).str.lower().str.strip()
+def pollution_multiplier(
+    osm_type: pd.Series,
+    building_type: pd.Series | None = None,
+) -> np.ndarray:
+    """The source model's multiplier: 3.0 industrial, 1.0 residential, else 2.0.
+
+    Residential is decided by the cadastre's ``building_type`` first, because the OSM
+    point-in-polygon join misses most buildings: a house without an OSM polygon used to
+    land in the 2.0 bucket and was charged like a warehouse (10,373 of them in the
+    km 35-50 scope). OSM ``type`` keeps the industrial band - the cadastre only knows
+    residential / non-residential - and still settles residential where it has no type.
+    """
+    text = pd.Series(osm_type).fillna("").astype(str).str.lower().str.strip()
     multiplier = np.full(len(text), 2.0, dtype="float64")
-    multiplier[text.str.contains("residential").to_numpy()] = 1.0
-    # Industrial is checked first in simple_model_fourth_scenario, so it wins.
+
+    kind = None
+    if building_type is not None:
+        kind = (pd.Series(building_type).reset_index(drop=True)
+                .fillna("").astype(str).str.lower().str.strip())
+        # "non-residential" contains "residential": exclude it before testing.
+        residential = kind.str.contains("residential") & ~kind.str.contains("non-residential")
+        multiplier[residential.to_numpy()] = 1.0
+
+    osm_residential = text.str.contains("residential").to_numpy()
+    if kind is None:
+        multiplier[osm_residential] = 1.0
+    else:
+        # A cadastre type that says neither (blank) leaves the OSM tag to decide.
+        unknown = ~(kind.str.contains("residential")
+                    | kind.str.contains("non-residential")).to_numpy()
+        multiplier[osm_residential & unknown] = 1.0
+    # Industrial is checked last in simple_model_fourth_scenario, so it wins.
     multiplier[text.str.contains("industrial").to_numpy()] = 3.0
     return multiplier
 
@@ -193,13 +225,18 @@ def pollution_multiplier(osm_type: pd.Series) -> np.ndarray:
 def water_quality_table(
     buildings,
     osm_type: pd.Series | None = None,
+    building_type: pd.Series | None = None,
     unit_price: float = DEFAULT_QUALITY_UNIT_PRICE,
 ) -> pd.DataFrame:
     """Scenario 4: footprint × pollution multiplier × unit price, per building."""
     if osm_type is None:
         osm_type = load_osm_types(buildings)
     osm_type = pd.Series(osm_type).reindex(getattr(buildings, "index", None))
-    multiplier = pollution_multiplier(osm_type)
+    if building_type is None and "building_type" in getattr(buildings, "columns", []):
+        building_type = buildings["building_type"]
+    if building_type is not None:
+        building_type = pd.Series(building_type).reindex(getattr(buildings, "index", None))
+    multiplier = pollution_multiplier(osm_type, building_type)
 
     table = pd.DataFrame({
         "pollution_multiplier": multiplier,
@@ -215,15 +252,16 @@ def water_quality_table(
 
 def consumption_table(
     buildings,
-    liters_per_person: float = DEFAULT_LITERS_PER_PERSON,
-    unit_price_per_liter: float = DEFAULT_UNIT_PRICE_PER_LITER,
+    m3_per_person: float = DEFAULT_M3_PER_PERSON,
+    unit_price_per_m3: float = DEFAULT_UNIT_PRICE_PER_M3,
     usable_space_pct: float = DEFAULT_USABLE_SPACE_PCT,
 ) -> pd.DataFrame:
-    """Scenario 5: the water a building consumes, and its cost.
+    """Scenario 5: the water a building consumes, and its cost, in m³ and €/m³.
 
-    Residential buildings consume ``160 l × population`` (a positive population below 1
-    counts as one person, as in the source model); non-residential buildings consume
-    ``footprint × floors × 0.80 × 160/3``, the 80 % usable floor space of their volume.
+    Residential buildings consume ``0.16 m³ × population`` (160 l; a positive population
+    below 1 counts as one person, as in the source model); non-residential buildings
+    consume ``footprint × floors × 0.80 × 0.16/3``, the 80 % usable floor space of their
+    volume. The volume and the price are in m³ and €/m³, like every other scenario.
     """
     columns = list(getattr(buildings, "columns", []))
     b_type = (buildings["building_type"] if "building_type" in columns
@@ -247,15 +285,14 @@ def consumption_table(
     floors = floors.to_numpy(dtype="float64")
     rounded_floors = np.where(np.isfinite(floors) & (floors > 0.0), np.round(floors), 1.0)
 
-    residential_liters = rounded_population * float(liters_per_person)
-    non_residential_liters = (_footprint_m2(buildings) * rounded_floors * float(usable_space_pct)
-                              * (float(liters_per_person) / 3.0))
-    liters = np.where(is_residential.to_numpy(), residential_liters, non_residential_liters)
+    residential_m3 = rounded_population * float(m3_per_person)
+    non_residential_m3 = (_footprint_m2(buildings) * rounded_floors * float(usable_space_pct)
+                          * (float(m3_per_person) / 3.0))
+    volume_m3 = np.where(is_residential.to_numpy(), residential_m3, non_residential_m3)
 
     table = pd.DataFrame({
-        "water_consumption_liters": liters,
-        "water_consumption_m3": liters / 1000.0,
-        "water_consumption_cost_eur": liters * float(unit_price_per_liter),
+        "water_consumption_m3": volume_m3,
+        "water_consumption_cost_eur": volume_m3 * float(unit_price_per_m3),
     })
     table.insert(0, "building_id", building_ids(buildings))
     return table

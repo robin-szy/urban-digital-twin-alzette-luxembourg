@@ -16,11 +16,12 @@ be copied out of `users/Pegah/`:
   closer a building is to the water, the higher the levy, `150 € × (1 − distance / 50 m)`
   inside 50 m and 0 beyond.
 * **scenario 4, water-quality surcharge** — `src/simple_model_fourth_scenario.py`:
-  `footprint × pollution multiplier × 2.5 €/m²`, the multiplier from OSM (3.0 industrial,
-  1.0 residential, 2.0 for commercial / blank / unclassified).
-* **scenario 5, water consumption** — `src/simple_model_fifth_scenario.py`: 160 l per person
-  for residential buildings and `footprint × floors × 0.80 × 160/3 l` for the
-  non-residential ones, at 0.005 €/l.
+  `footprint × pollution multiplier × 0.5 €/m²`: 3.0 for an industrial OSM `type`,
+  1.0 residential (from the cadastre's `building_type`, OSM as fallback), 2.0 for
+  commercial / blank / unclassified — so the standard band pays 1 €/m².
+* **scenario 5, water consumption** — `src/simple_model_fifth_scenario.py`: 0.16 m³ (160 l)
+  per person for residential buildings and `footprint × floors × 0.80 × 0.16/3 m³` for the
+  non-residential ones, at 5 €/m³ — m³ and €/m³, like every other scenario.
 
 All five write **extra columns on the existing `building_population` rows** — no new table, no
 new GeoServer layer. The map layer `input_layers:building_population_4326` (tick
@@ -48,13 +49,16 @@ buildings, and the panel reads the totals back from `/water-fees/summary.json`.
 | `distance_to_river_m` | shortest distance from the footprint to the mapped watercourse |
 | `flood_risk_fee_eur` | **scenario 3's levy**: 150 € at 0 m, falling to 0 at 50 m |
 | `pollution_multiplier` | scenario 4's OSM runoff factor (3.0 / 2.0 / 1.0) |
-| `water_quality_charge_eur` | **scenario 4's surcharge**: footprint × multiplier × 2.5 €/m² |
-| `water_consumption_liters`, `water_consumption_m3` | scenario 5's water the building consumes |
-| `water_consumption_cost_eur` | **scenario 5's cost** at 0.005 €/l |
+| `water_quality_charge_eur` | **scenario 4's surcharge**: footprint × multiplier × 0.5 €/m² |
+| `water_consumption_m3` | scenario 5's water the building consumes, in m³ |
+| `water_consumption_cost_eur` | **scenario 5's cost** at 5 €/m³ |
 | `water_fees_computed_utc` | when this task last wrote the scope |
 
-The existing pool-model columns (`area_share`, `allocated_water_volume`, `total_cost`) are
-left alone: the two models sit side by side, so the old numbers stay comparable.
+The old pool-model columns (`area_share`, `allocated_water_volume`, `total_cost`,
+`total_water_baseline`, `extra_water_pool`, `unit_price`) were **removed from EDDIE on
+2026-11-27** (user request): Pegah's scenario 1 replaces that model, so the click card no
+longer shows a second, older price next to the five scenarios. The model's code
+(`eddie_building_population/simple_economic_model.py`) is kept in the repository.
 
 ## Install (three steps, all outside `users/Pegah/`)
 
@@ -83,8 +87,8 @@ back to an explicit window.
 
 The same panel also sets scenarios 3-5, which used to be backend defaults only: *Flood zone*
 (`distance_threshold`, m), *Flood levy* (`flood_risk_base_fee`, €), *Quality fee*
-(`quality_unit_price`, €/m²), *Use per person* (`liters_per_person`, l), *Use fee*
-(`unit_price_per_liter`, €/l) and *Usable floor space* (`usable_space_pct`, 0-1). The API
+(`quality_unit_price`, €/m²), *Use per person* (`m3_per_person`, m³), *Use fee*
+(`unit_price_per_m3`, €/m³) and *Usable floor space* (`usable_space_pct`, 0-1). The API
 accepts the same fields.
 
 Without the interface:
@@ -188,11 +192,15 @@ writes.
 
 **Scenario 4 (water-quality surcharge)**
 
-* The pollution multiplier comes from the OSM `type` tag of the building's footprint
-  (3.0 industrial, 1.0 residential, 2.0 for commercial and for buildings without an OSM
-  match), exactly as `simple_model_fourth_scenario.py` classifies it.
-* It is a charge on the footprint (2.5 €/m² × multiplier), so it dominates the total of the
-  five scenarios: it is a levy on sealed area, not an annual water bill.
+* The pollution multiplier uses the cadastre's `building_type` for residential (3.0
+  industrial from the OSM `type` tag, 1.0 residential, 2.0 for commercial / blank /
+  unclassified), unlike `simple_model_fourth_scenario.py`, which only reads the OSM tag: the
+  spatial join misses most buildings, so 10,373 houses of the km 35-50 scope used to be
+  charged as "other".
+* The unit price is **0.5 €/m² per multiplier unit**, not the source model's 2.5: at 2.5 the
+  standard band paid 5 €/m² of footprint, 3 to 9 times a real stormwater levy (0.4–2.0 €/m²
+  a year in Germany), and the scenario swamped the other four. At 0.5 the bands are
+  0.50 / 1.00 / 1.50 €/m² and the scenario sits beside scenarios 2 and 5.
 
 **Scenario 5 (water consumption)**
 

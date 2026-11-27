@@ -36,7 +36,7 @@ BUILDING_COLUMNS = (
     "rain_mm_season", "rainwater_unit_price_eur_per_m3", "rain_season", "rain_source",
     "distance_to_river_m", "flood_risk_fee_eur",
     "pollution_multiplier", "water_quality_charge_eur",
-    "water_consumption_liters", "water_consumption_m3", "water_consumption_cost_eur",
+    "water_consumption_m3", "water_consumption_cost_eur",
     "water_fees_computed_utc",
 )
 
@@ -47,9 +47,9 @@ PARAMETERS = {
     "rainwater_unit_price": (4.5, 0.0, 1000.0),
     "distance_threshold": (50.0, 0.0, 10000.0),
     "flood_risk_base_fee": (150.0, 0.0, 1e6),
-    "quality_unit_price": (2.5, 0.0, 1000.0),
-    "liters_per_person": (160.0, 0.0, 10000.0),
-    "unit_price_per_liter": (0.005, 0.0, 100.0),
+    "quality_unit_price": (0.5, 0.0, 1000.0),
+    "m3_per_person": (0.16, 0.0, 100.0),
+    "unit_price_per_m3": (5.0, 0.0, 1000.0),
     "usable_space_pct": (0.80, 0.0, 1.0),
 }
 SEASONS = ("winter", "spring", "summer", "autumn")
@@ -216,6 +216,10 @@ def _quality_detail(values: dict) -> str:
     if multiplier is not None:
         kind = {3.0: "industrial", 2.0: "commercial / other", 1.0: "residential"}.get(multiplier)
         parts.append(f"\u00d7{multiplier:g}" + (f" {kind} runoff" if kind else " runoff"))
+    charge = _number(values.get("water_quality_charge_eur"))
+    if charge is not None and footprint:
+        # What this building actually pays per m²: the unit price times its band.
+        parts.append(f"\u20ac{charge / footprint:,.2f}/m\u00b2")
     return "; ".join(parts)
 
 
@@ -235,9 +239,9 @@ def _consumption_detail(values: dict) -> str:
         parts.append(f"{volume:,.1f} m\u00b3")
     if _is_residential_building(values.get("building_type")):
         population = _number(values.get("est_population"))
-        parts.append(f"{population:,.1f} people \u00d7 160 l" if population else "no population: 0 l")
+        parts.append(f"{population:,.1f} people \u00d7 0.16 m\u00b3" if population else "no population: 0 m\u00b3")
     else:
-        parts.append("non-residential: usable floor space (footprint \u00d7 floors \u00d7 80 %) \u00d7 160/3 l")
+        parts.append("non-residential: usable floor space (footprint \u00d7 floors \u00d7 80 %) \u00d7 0.16/3 m\u00b3")
     return "; ".join(parts)
 
 
