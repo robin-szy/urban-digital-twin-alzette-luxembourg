@@ -5,9 +5,10 @@ be copied out of `users/Pegah/`:
 
 * **scenario 1, seasonal river tariff** — `src/timeseries_model_first_scenario.py`: the gauge
   readings give a total river volume every 15 minutes, which becomes a tariff shared by the
-  non-residential buildings by footprint. The task runs the gauge series over the **season's
-  own dates** and sums its intervals, so `water_fee_season_eur` is what a building owes for
-  the whole season (the mean interval fee is kept for reference).
+  non-residential buildings by footprint. The series is run over the **season's own dates**,
+  but its intervals are **averaged, not summed**: the mean stage of each gauge gives one mean
+  standing volume, one 4 % pool and one tariff, so `water_fee_season_eur` is one charge for
+  the season, not 8 832 of them.
 * **scenario 2, seasonal rain** — `seasonal_rain.py` (Lagloire's module) +
   `src/simple_model_second_scenario.py`: the rain of a season on the roofs becomes a volume,
   shared by footprint over **all** buildings.
@@ -33,9 +34,9 @@ buildings, and the panel reads the totals back from `/water-fees/summary.json`.
 | `water_area_share_15min` | share of the non-residential footprint (0 for residential / unclassified) |
 | `allocated_water_volume_15min_m3` | mean pool of the window × share |
 | `water_fee_15min_mean_eur` | mean tariff of the window × share — the typical 15-minute charge |
-| `water_fee_season_eur` | sum of the season's interval tariffs × share — **scenario 1's fee for the season** |
-| `allocated_water_volume_season_m3` | the season's tariff pool × share |
-| `tariff_total_eur_season`, `water_volume_season_m3` | the season's tariff pool and the river volume measured over it |
+| `water_fee_season_eur` | the season's charge × share — **scenario 1's fee for the season** (mean level, not the sum of the intervals) |
+| `allocated_water_volume_season_m3` | the season's mean tariff pool × share |
+| `tariff_total_eur_season`, `water_volume_season_m3` | the season's tariff at the mean level and the mean standing volume it prices |
 | `water_fee_15min_min_eur`, `water_fee_15min_max_eur` | cheapest / dearest interval × share |
 | `tariff_mean_eur_15min`, `tariff_intervals_15min` | the window's tariff and how many intervals priced |
 | `gauge_quality_15min` | weakest interval label: `observed` / `interpolated` / `carried` / `missing` |
@@ -160,13 +161,13 @@ writes.
 * Timestamps are treated as UTC, as the collector stores them; around a clock change a
   period boundary can shift by an hour.
 * With `tariff_period = season` (the default) the gauges are read from the first to the last
-  day of the chosen season — 8 832 intervals for summer 2024 — and their tariffs are
-  **summed**: the money owed for the season, not the money of one interval. Over summer 2024
-  the river carries about 1.30 billion m³ through the two mapped sections, so the 4 % pool
-  at 7 €/m³ is about 363 M€ for the scope and dominates the five-scenario total. That is the
-  source model's rate applied continuously; if the levy is meant per interval, a day or a
-  month, the period has to be stated and the rate scaled to it. The share is the `percentage`
-  parameter (default 0.04, formerly 0.10).
+  day of the chosen season — 8 832 intervals for summer 2024 — and their **mean** level is
+  charged: the stages are averaged into one height, giving one mean standing volume
+  (about 146 660 m³ over summer 2024), one 4 % pool and a tariff of about 41 065 € for the
+  scope, shared by footprint. The intervals are *not* summed: charging each of them would
+  bill the same river 8 832 times and inflate scenario 1 to ~363 M€ (≈41× the real Alzette
+  throughput, MQ 3.96 m³/s). The share is the `percentage` parameter (default 0.04, formerly
+  0.10).
 * `tariff_period = window` keeps the earlier behaviour: the `gauge_start` / `gauge_end`
   window, and `water_fee_15min_mean_eur` is the fee shown.
 

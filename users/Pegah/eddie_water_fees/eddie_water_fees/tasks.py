@@ -70,8 +70,8 @@ COLUMNS: dict[str, str] = {
     # AOI change (Robin, 2026-11-25): why scenario 1 is missing or only partial for this
     # reach (the three gauges cover Alzette km 35.0-54.34 only). NULL when fully computed.
     "tariff_note_15min": "text",
-    # Scenario 1, the same gauge series summed over the season: what the building owes
-    # for the whole period, the river volume measured over it, and the season's pool.
+    # Scenario 1, the same gauge series charged once on the season's mean level: what the
+    # building owes for the season, the mean standing volume, and the pool it implies.
     "water_fee_season_eur": "double precision",
     "allocated_water_volume_season_m3": "double precision",
     "tariff_total_eur_season": "double precision",
@@ -399,9 +399,9 @@ def compute_water_fees(
     if mean_tariff is not None:
         print(f" -> Mean tariff {mean_tariff:,.2f} EUR shared by {fee_buildings} non-residential buildings")
     if series is not None:
-        print(f" -> Season tariff {values['tariff_total_eur_season'].iloc[0]:,.2f} EUR over "
-              f"{values['tariff_intervals_15min'].iloc[0]:.0f} intervals, "
-              f"river volume {values['water_volume_season_m3'].iloc[0]:,.0f} m\u00b3")
+        print(f" -> Season tariff {values['tariff_total_eur_season'].iloc[0]:,.2f} EUR on the "
+              f"mean level over {values['tariff_intervals_15min'].iloc[0]:.0f} intervals, "
+              f"mean river volume {values['water_volume_season_m3'].iloc[0]:,.0f} m\u00b3")
     print(f" -> {rain_mm} mm of rain -> {values['rain_volume_m3'].iloc[0]:,.0f} m³, "
           f"{values['rainwater_cost_eur'].sum():,.2f} EUR at {rainwater_unit_price}/m³")
     in_zone = int((values["flood_risk_fee_eur"] > 0).sum())

@@ -29,6 +29,12 @@ The tariff follows scenario 1::
     tariff(t)     = extra_pool(t) * unit_price
     fee_b(t)      = tariff(t) * area_share_b        (share constant in time)
 
+The season is charged **once**, on the period's mean level: the gauge stages are
+averaged over the season into one height each, that gives one mean standing volume,
+one 4 % pool and one tariff, shared by footprint. The 15-minute series is the input
+of that average, not 8 832 separate bills (V(t) is linear in the stages, so the mean
+of V(t) is the mean-stage volume).
+
 Assumptions (deliberate, not measurements)
 ------------------------------------------
 * The mapped river surface is an approximate fixed top-down area. This is a volume
@@ -620,23 +626,28 @@ def fee_table(buildings: pd.DataFrame | gpd.GeoDataFrame, series: pd.DataFrame) 
     -------
     pd.DataFrame
         ``building_id`` plus the columns added to building_population: the share, the
-        mean / min / max fee over the priced intervals, the season totals (sum of the
-        interval tariffs, sum of the river volume), and the period's constants
-        (mean tariff, number of intervals, worst quality, window).
+        mean / min / max fee over the priced intervals, the season figures (the mean
+        standing volume of the river over the period and the charge it implies), and the
+        period's constants (mean tariff, number of intervals, worst quality, window).
 
-    The season columns sum the same series the mean is taken from: a building's fee for
-    the period is its share of every interval's tariff, so ``water_fee_season_eur`` is
-    what it owes for the whole period, while ``water_fee_15min_mean_eur`` stays the
-    typical 15-minute charge.
+    The season is charged once, on the mean level: the stages are averaged over the
+    period, multiplied by their section areas -> one mean standing volume -> one pool ->
+    one tariff, shared by footprint. It is *not* the sum of the period's interval tariffs
+    (that would bill the same river once per quarter-hour and inflate the fee ~8 832
+    times); ``water_fee_season_eur`` therefore equals ``water_fee_15min_mean_eur`` by
+    construction, and ``tariff_intervals_15min`` says how many intervals were averaged.
     """
     shares = area_share(buildings)
     tariffs = series["tariff_eur"].dropna()
     if not len(tariffs):
         raise ValueError("No priced interval in the period; nothing to allocate.")
     mean_pool = float(series["extra_pool_m3"].mean())
-    season_pool_m3 = float(series["extra_pool_m3"].dropna().sum())
-    season_volume_m3 = float(series["total_volume_m3"].dropna().sum())
-    season_tariff_eur = float(tariffs.sum())
+    # The season is charged once, on the season's mean water level - not once per interval.
+    # V(t) is linear in the stages, so averaging V(t) is the same as taking each gauge's mean
+    # stage and multiplying it by its section area: one mean standing volume, one pool.
+    season_pool_m3 = float(series["extra_pool_m3"].dropna().mean())
+    season_volume_m3 = float(series["total_volume_m3"].dropna().mean())
+    season_tariff_eur = float(tariffs.mean())
 
     table = pd.DataFrame({
         "water_area_share_15min": shares,

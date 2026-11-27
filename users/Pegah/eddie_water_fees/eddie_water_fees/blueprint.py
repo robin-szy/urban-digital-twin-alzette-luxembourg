@@ -179,12 +179,12 @@ def _tariff_detail(values: dict) -> str:
     parts = []
     intervals = values.get("tariff_intervals_15min")
     if intervals:
-        parts.append(f"sum of {intervals} intervals")
+        parts.append(f"mean of {intervals} 15-minute intervals")
     parts.append(f"gauges {stamp(values.get('gauge_window_start_utc'))} to "
                  f"{stamp(values.get('gauge_window_end_utc'))} UTC")
     volume = _number(values.get("water_volume_season_m3"))
     if volume is not None:
-        parts.append(f"{volume:,.0f} m\u00b3 of river water in the season")
+        parts.append(f"{volume:,.0f} m\u00b3 mean standing river water")
     if values.get("gauge_quality_15min"):
         parts.append(str(values["gauge_quality_15min"]))
     low = _number(values.get("water_fee_15min_min_eur"))
@@ -311,7 +311,7 @@ def water_fees_building(building_id: str) -> ResponseValue:
     # AOI change (Robin, 2026-11-25): a NULL tariff now means "not computed for this reach"
     # (outside the gauge coverage), so it stays None - the popup shows "–" - instead of
     # becoming 0.0. The total then leaves it out, and the note says so.
-    # The season total is what the building owes for the season; a result written before it
+    # The season charge is what the building owes for the season; a result written before it
     # existed falls back to the mean interval fee.
     season_fee = _number(values.get("water_fee_season_eur"))
     tariff = season_fee if season_fee is not None else _number(values.get("water_fee_15min_mean_eur"))
@@ -335,7 +335,7 @@ def water_fees_building(building_id: str) -> ResponseValue:
         "scenarios": [
             {
                 "id": "river_tariff",
-                "name": "Scenario 1 \u00b7 river water tariff (season total)",
+                "name": "Scenario 1 \u00b7 river water tariff (season, mean level)",
                 "cost_eur": tariff,
                 "volume_m3": (_number(values.get("allocated_water_volume_season_m3"))
                               if season_fee is not None
@@ -378,6 +378,8 @@ def water_fees_building(building_id: str) -> ResponseValue:
             "end": (values.get("gauge_window_end_utc").isoformat()
                     if hasattr(values.get("gauge_window_end_utc"), "isoformat") else None),
             "river_volume_m3": _number(values.get("water_volume_season_m3")),
+            # The season is charged on the mean level, so this volume is a mean, not a sum.
+            "river_volume_basis": "mean standing volume of the season",
         },
         "total_eur": round((tariff or 0.0) + rain + flood + quality + consumption, 2),
         "computed_utc": computed.isoformat() if hasattr(computed, "isoformat") else computed,
