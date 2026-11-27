@@ -62,9 +62,9 @@ if [[ -f "wwwroot/flood-cost-popup.js" ]]; then
   SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "wwwroot/flood-cost-popup.js")
   echo "$SUBBED" > "wwwroot/flood-cost-popup.js"
   if ! grep -q 'src="/flood-cost-popup.js' wwwroot/index.html; then
-    sed -i 's#</body>#<script src="/flood-cost-popup.js?v=2"></script></body>#' wwwroot/index.html
+    sed -i 's#</body>#<script src="/flood-cost-popup.js?v=4"></script></body>#' wwwroot/index.html
   fi
-  sed -i 's#src="/flood-cost-popup.js?v=[^"]*"#src="/flood-cost-popup.js?v=2"#g' wwwroot/index.html
+  sed -i 's#src="/flood-cost-popup.js?v=[^"]*"#src="/flood-cost-popup.js?v=4"#g' wwwroot/index.html
 fi
 # Run original terria startup command
 node ./node_modules/terriajs-server/lib/app.js --config-file serverconfig.json
